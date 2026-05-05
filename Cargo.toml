@@ -1,0 +1,17 @@
+[package]
+name = "oxideav-bitstream"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-bitstream"
+homepage = "https://github.com/OxideAV/oxideav-bitstream"
+authors = ["Mark Karpeles"]
+description = "Minimal IDR/keyframe header parsing for H.264, HEVC, AV1 — used by oxideav HW-accel bridge crates (vaapi, vdpau, vulkan-video) to populate slice-data API parameter buffers without pulling a full SW codec"
+readme = "README.md"
+keywords = ["bitstream", "parser", "h264", "hevc", "av1"]
+categories = ["multimedia::encoding", "multimedia::video", "parser-implementations"]
+
+[dependencies]
+# Intentionally empty for v0. If a shared error type from oxideav-core
+# becomes worth using, add it here later.
