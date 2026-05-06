@@ -44,6 +44,7 @@ pub mod h264;
 pub mod hevc;
 pub mod ivf;
 pub mod vp8;
+pub mod vp9;
 
 /// Errors produced by the parsers in this crate.
 ///
