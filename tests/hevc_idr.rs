@@ -77,6 +77,34 @@ fn hevc_split_annex_b_finds_vps_sps_pps_idr() {
 }
 
 #[test]
+fn hevc_pps_extended_fields_parse() {
+    // The Round 1 parser stopped after `entropy_coding_sync_enabled_flag`.
+    // Round 5 extends it through the deblocking-filter, lists-modification,
+    // parallel-merge and slice-segment-header-extension fields. Verify the
+    // extended fields parse on the existing x265 fixture without rejecting
+    // the input.
+    let parsed = parse_idr_only(HEVC_MAIN).expect("parse_idr_only HEVC");
+
+    // Concrete numeric assertions for the new PPS fields. The x265
+    // ultrafast preset enables loop_filter_across_slices but does NOT
+    // emit the deblocking-filter control block, so all of the
+    // deblocking-related fields stay at their defaults.
+    assert!(parsed.pps.pps_loop_filter_across_slices_enabled_flag);
+    assert!(!parsed.pps.deblocking_filter_control_present_flag);
+    assert!(!parsed.pps.deblocking_filter_override_enabled_flag);
+    assert!(!parsed.pps.pps_deblocking_filter_disabled_flag);
+    assert_eq!(parsed.pps.pps_beta_offset_div2, 0);
+    assert_eq!(parsed.pps.pps_tc_offset_div2, 0);
+    // lists_modification + parallel_merge + extension flag.
+    assert!(!parsed.pps.lists_modification_present_flag);
+    assert_eq!(parsed.pps.log2_parallel_merge_level_minus2, 0);
+    assert!(!parsed.pps.slice_segment_header_extension_present_flag);
+    // SPS num_long_term_ref_pics_sps default — fixture has
+    // long_term_ref_pics_present_flag=0 so this is 0.
+    assert_eq!(parsed.sps.num_long_term_ref_pics_sps, 0);
+}
+
+#[test]
 fn hevc_individual_parsers_succeed() {
     let vps_nal = find_nal_of_type(HEVC_MAIN, NAL_TYPE_VPS).expect("HEVC has VPS");
     let sps_nal = find_nal_of_type(HEVC_MAIN, NAL_TYPE_SPS).expect("HEVC has SPS");

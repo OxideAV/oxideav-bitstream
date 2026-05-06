@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- HEVC PPS parser extended past `entropy_coding_sync_enabled_flag`
+  (9 new fields: `pps_loop_filter_across_slices_enabled_flag`,
+  `deblocking_filter_control_present_flag`,
+  `deblocking_filter_override_enabled_flag`,
+  `pps_deblocking_filter_disabled_flag`, `pps_beta_offset_div2`,
+  `pps_tc_offset_div2`, `lists_modification_present_flag`,
+  `log2_parallel_merge_level_minus2`,
+  `slice_segment_header_extension_present_flag`) plus
+  `num_long_term_ref_pics_sps` on SPS. Unblocks HEVC migration in
+  oxideav-vdpau and HEVC decoder in oxideav-vaapi.
+- New `vp8` module: VP8 keyframe header parser (RFC6386 §9.1).
+- New `vp9` module: lifted from `oxideav-vdpau::vp9` (uncompressed
+  header per VP9 spec). The vdpau crate's inline copy will migrate
+  to depend on this in a follow-up commit.
+- New `mpeg2` module: lifted from `oxideav-vdpau::mpeg2` (sequence /
+  picture / extension headers per ITU-T H.262).
+- New `vc1` module: VC-1 sequence + entry-point + picture header
+  parser (SMPTE 421M Advanced profile, Annex-G start codes).
+- New `ivf` module: shared IVF demuxer used by VP8 and VP9 fixtures.
+
 - **Round 1: scaffold + minimal IDR/keyframe header parsers** for
   H.264, HEVC and AV1.
   - Shared `BitstreamError` and `bit_reader` module (`u(n)`, `ue(v)`,

@@ -187,6 +187,11 @@ pub struct HevcSps {
     pub pcm_enabled_flag: bool,
     pub num_short_term_ref_pic_sets: u32,
     pub long_term_ref_pics_present_flag: bool,
+    /// `num_long_term_ref_pics_sps`. The minimal parser refuses
+    /// `long_term_ref_pics_present_flag = 1`, so this is always 0
+    /// in practice — but the field is plumbed through to
+    /// `VdpPictureInfoHEVC` regardless and is therefore preserved.
+    pub num_long_term_ref_pics_sps: u32,
     pub sps_temporal_mvp_enabled_flag: bool,
     pub strong_intra_smoothing_enabled_flag: bool,
 }
@@ -262,6 +267,28 @@ pub struct HevcPps {
     pub transquant_bypass_enabled_flag: bool,
     pub tiles_enabled_flag: bool,
     pub entropy_coding_sync_enabled_flag: bool,
+    /// 7.4.3.3.1 — controls whether the in-loop deblocking filter
+    /// crosses slice boundaries.
+    pub pps_loop_filter_across_slices_enabled_flag: bool,
+    /// 7.4.3.3.1 — gates the deblocking-filter syntax block below.
+    pub deblocking_filter_control_present_flag: bool,
+    /// 7.4.3.3.1 — when set, allows the slice header to override
+    /// the PPS deblocking-filter parameters.
+    pub deblocking_filter_override_enabled_flag: bool,
+    /// 7.4.3.3.1 — disables the deblocking filter when set.
+    pub pps_deblocking_filter_disabled_flag: bool,
+    /// 7.4.3.3.1 — beta offset / 2 (signed Exp-Golomb), -6..6.
+    pub pps_beta_offset_div2: i32,
+    /// 7.4.3.3.1 — tc offset / 2 (signed Exp-Golomb), -6..6.
+    pub pps_tc_offset_div2: i32,
+    /// 7.4.3.3.1 — controls whether ref-pic-list modification is
+    /// signalled in the slice header.
+    pub lists_modification_present_flag: bool,
+    /// 7.4.3.3.1 — log2 of the minimum CU size that allows
+    /// parallel merge candidate derivation.
+    pub log2_parallel_merge_level_minus2: u32,
+    /// 7.4.3.3.1 — gates the slice-segment header extension block.
+    pub slice_segment_header_extension_present_flag: bool,
 }
 
 /// Minimal slice segment header (7.3.6).
@@ -547,10 +574,30 @@ pub fn parse_pps_nal(nal: &[u8]) -> Result<HevcPps, BitstreamError> {
             "HEVC PPS entropy_coding_sync_enabled_flag=1 (WPP) not supported by minimal parser",
         ));
     }
-    // pps_loop_filter_*_offset, pps_scaling_list_data, lists_modification,
-    // log2_parallel_merge_level, slice_segment_header_extension,
-    // pps_extension: all skipped — we have what the IDR-only HW path
-    // needs.
+    // 7.3.2.3.1 continued. The tile-related block is skipped because
+    // we already refused `tiles_enabled_flag=1` above.
+    pps.pps_loop_filter_across_slices_enabled_flag = r.u(1) != 0;
+    pps.deblocking_filter_control_present_flag = r.u(1) != 0;
+    if pps.deblocking_filter_control_present_flag {
+        pps.deblocking_filter_override_enabled_flag = r.u(1) != 0;
+        pps.pps_deblocking_filter_disabled_flag = r.u(1) != 0;
+        if !pps.pps_deblocking_filter_disabled_flag {
+            pps.pps_beta_offset_div2 = r.se()?;
+            pps.pps_tc_offset_div2 = r.se()?;
+        }
+    }
+    let pps_scaling_list_data_present_flag = r.u(1);
+    if pps_scaling_list_data_present_flag != 0 {
+        return Err(BitstreamError::unsupported(
+            "HEVC PPS pps_scaling_list_data_present_flag=1 not supported by minimal parser",
+        ));
+    }
+    pps.lists_modification_present_flag = r.u(1) != 0;
+    pps.log2_parallel_merge_level_minus2 = r.ue()?;
+    pps.slice_segment_header_extension_present_flag = r.u(1) != 0;
+    // pps_extension_present_flag and any extension blocks are not
+    // consulted — they belong to the range / SCC / etc. extensions
+    // which the minimal parser does not surface.
     Ok(pps)
 }
 
