@@ -303,7 +303,9 @@ fn read_tile_info(r: &mut BitReader<'_>, h: &mut Vp9UncompressedHeader) {
 /// hands to its picture-info population step.
 pub fn parse_uncompressed_header(payload: &[u8]) -> Result<Vp9UncompressedHeader, BitstreamError> {
     if payload.len() < 8 {
-        return Err(BitstreamError::unexpected_end("VP9 frame shorter than 8 bytes"));
+        return Err(BitstreamError::unexpected_end(
+            "VP9 frame shorter than 8 bytes",
+        ));
     }
     let mut r = BitReader::new(payload);
     let mut h = Vp9UncompressedHeader::default();

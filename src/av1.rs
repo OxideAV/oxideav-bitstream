@@ -75,7 +75,10 @@ pub struct ObuHeader {
 /// `--obu` produces), the OBU body is *required* to have a
 /// `obu_size` field — Section 5 mandates `obu_has_size_field == 1`
 /// for all OBUs in the LOBF. We enforce that here.
-pub fn read_obu(bytes: &[u8], offset: usize) -> Result<(ObuHeader, usize, usize, usize), BitstreamError> {
+pub fn read_obu(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<(ObuHeader, usize, usize, usize), BitstreamError> {
     if offset >= bytes.len() {
         return Err(BitstreamError::unexpected_end(
             "OBU offset past end of buffer",
@@ -96,9 +99,7 @@ pub fn read_obu(bytes: &[u8], offset: usize) -> Result<(ObuHeader, usize, usize,
     let mut cur = offset + 1;
     let (temporal_id, spatial_id) = if extension_flag {
         if cur >= bytes.len() {
-            return Err(BitstreamError::unexpected_end(
-                "OBU extension byte missing",
-            ));
+            return Err(BitstreamError::unexpected_end("OBU extension byte missing"));
         }
         let e = bytes[cur];
         cur += 1;
@@ -144,9 +145,7 @@ pub fn read_leb128(bytes: &[u8], offset: usize) -> Result<(u64, usize), Bitstrea
     let mut value: u64 = 0;
     for i in 0..8 {
         if offset + i >= bytes.len() {
-            return Err(BitstreamError::unexpected_end(
-                "leb128 truncated",
-            ));
+            return Err(BitstreamError::unexpected_end("leb128 truncated"));
         }
         let b = bytes[offset + i];
         value |= ((b & 0x7f) as u64) << (i * 7);
@@ -154,9 +153,7 @@ pub fn read_leb128(bytes: &[u8], offset: usize) -> Result<(u64, usize), Bitstrea
             return Ok((value, i + 1));
         }
     }
-    Err(BitstreamError::invalid(
-        "leb128 longer than 8 bytes",
-    ))
+    Err(BitstreamError::invalid("leb128 longer than 8 bytes"))
 }
 
 // ─────────────────────────── Sequence header ─────────────────────────────────
@@ -626,11 +623,9 @@ pub fn parse_obu_stream(bytes: &[u8]) -> Result<Av1KeyframeParse<'_>, BitstreamE
                 // No-op: just delimits temporal units.
             }
             OBU_FRAME => {
-                let seq = sequence_header
-                    .as_ref()
-                    .ok_or_else(|| BitstreamError::invalid(
-                        "OBU_FRAME without preceding sequence header",
-                    ))?;
+                let seq = sequence_header.as_ref().ok_or_else(|| {
+                    BitstreamError::invalid("OBU_FRAME without preceding sequence header")
+                })?;
                 if frame_header.is_none() {
                     let fh = parse_frame_header(&bytes[p_start..p_end], seq)?;
                     frame_header = Some(fh);
@@ -639,11 +634,9 @@ pub fn parse_obu_stream(bytes: &[u8]) -> Result<Av1KeyframeParse<'_>, BitstreamE
                 }
             }
             OBU_FRAME_HEADER => {
-                let seq = sequence_header
-                    .as_ref()
-                    .ok_or_else(|| BitstreamError::invalid(
-                        "OBU_FRAME_HEADER without preceding sequence header",
-                    ))?;
+                let seq = sequence_header.as_ref().ok_or_else(|| {
+                    BitstreamError::invalid("OBU_FRAME_HEADER without preceding sequence header")
+                })?;
                 if frame_header.is_none() {
                     let fh = parse_frame_header(&bytes[p_start..p_end], seq)?;
                     frame_header = Some(fh);
@@ -668,8 +661,8 @@ pub fn parse_obu_stream(bytes: &[u8]) -> Result<Av1KeyframeParse<'_>, BitstreamE
 
     let sequence_header = sequence_header
         .ok_or_else(|| BitstreamError::invalid("stream has no sequence header OBU"))?;
-    let frame_header = frame_header
-        .ok_or_else(|| BitstreamError::invalid("stream has no key-frame OBU"))?;
+    let frame_header =
+        frame_header.ok_or_else(|| BitstreamError::invalid("stream has no key-frame OBU"))?;
     let start = keyframe_start.expect("keyframe bounds set when frame_header set");
     let end = keyframe_end.expect("keyframe bounds set when frame_header set");
     Ok(Av1KeyframeParse {

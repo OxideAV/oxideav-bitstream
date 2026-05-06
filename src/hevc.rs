@@ -54,11 +54,8 @@ pub fn split_annex_b(buf: &[u8]) -> Vec<&[u8]> {
     let n = buf.len();
     let mut last_payload_start: Option<usize> = None;
     while i < n {
-        let four = i + 3 < n
-            && buf[i] == 0
-            && buf[i + 1] == 0
-            && buf[i + 2] == 0
-            && buf[i + 3] == 1;
+        let four =
+            i + 3 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 && buf[i + 3] == 1;
         let three = !four && i + 2 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1;
         if four || three {
             if let Some(start) = last_payload_start.take() {
@@ -396,7 +393,9 @@ fn skip_st_ref_pic_set(_r: &mut BitReader<'_>) -> Result<(), BitstreamError> {
 /// Parse a VPS NAL (with two-byte NAL header at index 0..1).
 pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
     if nal.len() < 2 {
-        return Err(BitstreamError::unexpected_end("VPS NAL shorter than 2 bytes"));
+        return Err(BitstreamError::unexpected_end(
+            "VPS NAL shorter than 2 bytes",
+        ));
     }
     let (_, nal_type, _, _) = nal_header(nal[0], nal[1]);
     if nal_type != NAL_TYPE_VPS {
@@ -416,8 +415,7 @@ pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
     vps.vps_max_sub_layers_minus1 = r.u(3) as u8;
     vps.vps_temporal_id_nesting_flag = r.u(1) != 0;
     let _vps_reserved_0xffff_16bits = r.u(16);
-    vps.profile_tier_level =
-        parse_profile_tier_level(&mut r, true, vps.vps_max_sub_layers_minus1)?;
+    vps.profile_tier_level = parse_profile_tier_level(&mut r, true, vps.vps_max_sub_layers_minus1)?;
     // Remaining VPS fields (vps_sub_layer_ordering_info, layer_id_included…,
     // vps_num_hrd_parameters, VUI, extensions) are not consumed.
     Ok(vps)
@@ -426,7 +424,9 @@ pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
 /// Parse an SPS NAL (with two-byte NAL header at index 0..1).
 pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
     if nal.len() < 2 {
-        return Err(BitstreamError::unexpected_end("SPS NAL shorter than 2 bytes"));
+        return Err(BitstreamError::unexpected_end(
+            "SPS NAL shorter than 2 bytes",
+        ));
     }
     let (_, nal_type, _, _) = nal_header(nal[0], nal[1]);
     if nal_type != NAL_TYPE_SPS {
@@ -442,8 +442,7 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
         sps_temporal_id_nesting_flag: r.u(1) != 0,
         ..HevcSps::default()
     };
-    sps.profile_tier_level =
-        parse_profile_tier_level(&mut r, true, sps.sps_max_sub_layers_minus1)?;
+    sps.profile_tier_level = parse_profile_tier_level(&mut r, true, sps.sps_max_sub_layers_minus1)?;
     sps.sps_seq_parameter_set_id = r.ue()? as u8;
     sps.chroma_format_idc = r.ue()? as u8;
     if sps.chroma_format_idc == 3 {
@@ -527,7 +526,9 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
 /// Parse a PPS NAL (with two-byte NAL header at index 0..1).
 pub fn parse_pps_nal(nal: &[u8]) -> Result<HevcPps, BitstreamError> {
     if nal.len() < 2 {
-        return Err(BitstreamError::unexpected_end("PPS NAL shorter than 2 bytes"));
+        return Err(BitstreamError::unexpected_end(
+            "PPS NAL shorter than 2 bytes",
+        ));
     }
     let (_, nal_type, _, _) = nal_header(nal[0], nal[1]);
     if nal_type != NAL_TYPE_PPS {
@@ -610,7 +611,9 @@ pub fn parse_slice_header_minimal(
     pps: &HevcPps,
 ) -> Result<HevcSliceHeader, BitstreamError> {
     if nal.len() < 2 {
-        return Err(BitstreamError::unexpected_end("slice NAL shorter than 2 bytes"));
+        return Err(BitstreamError::unexpected_end(
+            "slice NAL shorter than 2 bytes",
+        ));
     }
     let (_, nal_unit_type, _, _) = nal_header(nal[0], nal[1]);
     let is_irap_slice = is_irap(nal_unit_type);
@@ -627,13 +630,12 @@ pub fn parse_slice_header_minimal(
     }
     sh.slice_pic_parameter_set_id = r.ue()? as u8;
 
-    let dependent_slice_segment_flag = if !sh.first_slice_segment_in_pic_flag
-        && pps.dependent_slice_segments_enabled_flag
-    {
-        r.u(1) != 0
-    } else {
-        false
-    };
+    let dependent_slice_segment_flag =
+        if !sh.first_slice_segment_in_pic_flag && pps.dependent_slice_segments_enabled_flag {
+            r.u(1) != 0
+        } else {
+            false
+        };
     if dependent_slice_segment_flag {
         return Err(BitstreamError::unsupported(
             "HEVC dependent slice segments not supported by minimal parser",
@@ -642,7 +644,8 @@ pub fn parse_slice_header_minimal(
     if !sh.first_slice_segment_in_pic_flag {
         // slice_segment_address — ceil(log2(num CTBs)) bits. We don't
         // need it for the HW IDR submit; just consume.
-        let ctb_log2 = sps.log2_min_luma_coding_block_size_minus3 as u32 + 3
+        let ctb_log2 = sps.log2_min_luma_coding_block_size_minus3 as u32
+            + 3
             + sps.log2_diff_max_min_luma_coding_block_size as u32;
         let ctb_size = 1u32 << ctb_log2;
         let pic_w_in_ctbs = sps.pic_width_in_luma_samples.div_ceil(ctb_size);
@@ -667,8 +670,7 @@ pub fn parse_slice_header_minimal(
 
     // For non-IDR slices, slice_pic_order_cnt_lsb is present.
     if !matches!(nal_unit_type, NAL_TYPE_IDR_W_RADL | NAL_TYPE_IDR_N_LP) {
-        sh.slice_pic_order_cnt_lsb =
-            r.u(sps.log2_max_pic_order_cnt_lsb_minus4 as u32 + 4);
+        sh.slice_pic_order_cnt_lsb = r.u(sps.log2_max_pic_order_cnt_lsb_minus4 as u32 + 4);
         // … plus more ref-pic-set logic. We don't follow it in v0;
         // the rest of the slice header is irrelevant to the IRAP HW
         // submit.
@@ -749,11 +751,8 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
     let n = buf.len();
     let mut current: Option<(usize, usize)> = None;
     while i < n {
-        let four = i + 3 < n
-            && buf[i] == 0
-            && buf[i + 1] == 0
-            && buf[i + 2] == 0
-            && buf[i + 3] == 1;
+        let four =
+            i + 3 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 && buf[i + 3] == 1;
         let three = !four && i + 2 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1;
         if four || three {
             if let Some((sc, body_start)) = current.take() {

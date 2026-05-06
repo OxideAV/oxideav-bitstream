@@ -66,7 +66,11 @@ fn hevc_parses_via_idr_only_and_dimensions_match() {
 #[test]
 fn hevc_split_annex_b_finds_vps_sps_pps_idr() {
     let nals = split_annex_b(HEVC_MAIN);
-    let types: Vec<u8> = nals.iter().filter(|n| n.len() >= 2).map(|n| (n[0] >> 1) & 0x3f).collect();
+    let types: Vec<u8> = nals
+        .iter()
+        .filter(|n| n.len() >= 2)
+        .map(|n| (n[0] >> 1) & 0x3f)
+        .collect();
     assert!(types.contains(&NAL_TYPE_VPS), "no VPS in HEVC fixture");
     assert!(types.contains(&NAL_TYPE_SPS), "no SPS in HEVC fixture");
     assert!(types.contains(&NAL_TYPE_PPS), "no PPS in HEVC fixture");
@@ -114,7 +118,10 @@ fn hevc_individual_parsers_succeed() {
     let sps = parse_sps_nal(sps_nal).expect("parse_sps_nal");
     let pps = parse_pps_nal(pps_nal).expect("parse_pps_nal");
     assert_eq!(vps.vps_video_parameter_set_id, 0);
-    assert_eq!(sps.sps_video_parameter_set_id, vps.vps_video_parameter_set_id);
+    assert_eq!(
+        sps.sps_video_parameter_set_id,
+        vps.vps_video_parameter_set_id
+    );
     assert_eq!(sps.pic_width_in_luma_samples, 320);
     assert_eq!(sps.pic_height_in_luma_samples, 240);
     assert_eq!(pps.pps_seq_parameter_set_id, sps.sps_seq_parameter_set_id);

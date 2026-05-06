@@ -63,7 +63,9 @@ pub fn parse_header(buf: &[u8]) -> Result<(IvfHeader, &[u8]), BitstreamError> {
     }
     let version = u16::from_le_bytes([buf[4], buf[5]]);
     if version != 0 {
-        return Err(BitstreamError::invalid(format!("IVF version {version} != 0")));
+        return Err(BitstreamError::invalid(format!(
+            "IVF version {version} != 0"
+        )));
     }
     let header_len = u16::from_le_bytes([buf[6], buf[7]]);
     if header_len != 32 {
@@ -98,7 +100,9 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(IvfFrame<'_>, &[u8])>, Bitstrea
         buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11],
     ]);
     if buf.len() < 12 + size {
-        return Err(BitstreamError::unexpected_end("truncated IVF frame payload"));
+        return Err(BitstreamError::unexpected_end(
+            "truncated IVF frame payload",
+        ));
     }
     let payload = &buf[12..12 + size];
     let rest = &buf[12 + size..];
@@ -150,7 +154,10 @@ mod tests {
     fn parse_header_rejects_bad_magic() {
         let mut buf = synth_ivf(&IVF_FOURCC_VP80);
         buf[0] = b'X';
-        assert!(matches!(parse_header(&buf), Err(BitstreamError::InvalidData(_))));
+        assert!(matches!(
+            parse_header(&buf),
+            Err(BitstreamError::InvalidData(_))
+        ));
     }
 
     #[test]

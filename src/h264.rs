@@ -56,11 +56,8 @@ pub fn split_annex_b(buf: &[u8]) -> Vec<&[u8]> {
     let n = buf.len();
     let mut last_payload_start: Option<usize> = None;
     while i < n {
-        let four = i + 3 < n
-            && buf[i] == 0
-            && buf[i + 1] == 0
-            && buf[i + 2] == 0
-            && buf[i + 3] == 1;
+        let four =
+            i + 3 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 && buf[i + 3] == 1;
         let three = !four && i + 2 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1;
         if four || three {
             if let Some(start) = last_payload_start.take() {
@@ -205,12 +202,11 @@ impl H264Sps {
         let Some(c) = self.frame_cropping else {
             return coded;
         };
-        let crop_x =
-            if self.chroma_format_idc == 0 || self.separate_colour_plane_flag {
-                1
-            } else {
-                self.sub_width_c()
-            };
+        let crop_x = if self.chroma_format_idc == 0 || self.separate_colour_plane_flag {
+            1
+        } else {
+            self.sub_width_c()
+        };
         coded.saturating_sub((c.left + c.right) * crop_x)
     }
 
@@ -220,12 +216,11 @@ impl H264Sps {
         let Some(c) = self.frame_cropping else {
             return coded;
         };
-        let crop_y =
-            if self.chroma_format_idc == 0 || self.separate_colour_plane_flag {
-                2 - if self.frame_mbs_only_flag { 1 } else { 0 }
-            } else {
-                self.sub_height_c() * (2 - if self.frame_mbs_only_flag { 1 } else { 0 })
-            };
+        let crop_y = if self.chroma_format_idc == 0 || self.separate_colour_plane_flag {
+            2 - if self.frame_mbs_only_flag { 1 } else { 0 }
+        } else {
+            self.sub_height_c() * (2 - if self.frame_mbs_only_flag { 1 } else { 0 })
+        };
         coded.saturating_sub((c.top + c.bottom) * crop_y)
     }
 }
@@ -576,11 +571,8 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
     let n = buf.len();
     let mut current: Option<(usize, usize)> = None; // (start_code_start, body_start)
     while i < n {
-        let four = i + 3 < n
-            && buf[i] == 0
-            && buf[i + 1] == 0
-            && buf[i + 2] == 0
-            && buf[i + 3] == 1;
+        let four =
+            i + 3 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 && buf[i + 3] == 1;
         let three = !four && i + 2 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1;
         if four || three {
             if let Some((sc, body_start)) = current.take() {

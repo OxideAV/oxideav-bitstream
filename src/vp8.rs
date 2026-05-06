@@ -75,7 +75,9 @@ pub struct Vp8FrameHeader {
 /// interframe).
 pub fn parse_frame_header(stream: &[u8]) -> Result<Vp8FrameHeader, BitstreamError> {
     if stream.len() < 3 {
-        return Err(BitstreamError::unexpected_end("VP8 frame shorter than 3 bytes"));
+        return Err(BitstreamError::unexpected_end(
+            "VP8 frame shorter than 3 bytes",
+        ));
     }
     // The 3-byte tag is interpreted as a 24-bit little-endian word
     // and the fields are extracted LSB-first per RFC 6386 §9.1.
@@ -139,7 +141,7 @@ mod tests {
         // Build a synthetic 3-byte tag: frame_type=0, version=0,
         // show_frame=1, first_part_size=42.
         let first_part_size: u32 = 42;
-        let tag: u32 = 0 | (0 << 1) | (1 << 4) | (first_part_size << 5);
+        let tag: u32 = (1 << 4) | (first_part_size << 5);
         let mut stream = vec![
             (tag & 0xff) as u8,
             ((tag >> 8) & 0xff) as u8,

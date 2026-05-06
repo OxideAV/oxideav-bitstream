@@ -131,7 +131,7 @@ pub fn find_first_slice(buf: &[u8]) -> Option<usize> {
 // ─────────────────────────── Output structs ─────────────────────────────────
 
 /// Sequence header (§6.2.2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Mpeg2SequenceHeader {
     pub horizontal_size: u32,
     pub vertical_size: u32,
@@ -148,27 +148,15 @@ pub struct Mpeg2SequenceHeader {
     pub non_intra_quantiser_matrix: Option<[u8; 64]>,
 }
 
-impl Default for Mpeg2SequenceHeader {
-    fn default() -> Self {
-        Self {
-            horizontal_size: 0,
-            vertical_size: 0,
-            aspect_ratio_information: 0,
-            frame_rate_code: 0,
-            bit_rate: 0,
-            vbv_buffer_size: 0,
-            constrained_parameters_flag: false,
-            intra_quantiser_matrix: None,
-            non_intra_quantiser_matrix: None,
-        }
-    }
-}
-
 impl Mpeg2SequenceHeader {
     /// Effective intra-quantizer matrix in raster scan order (the
     /// custom matrix if present, otherwise the spec default).
     pub fn intra_quantizer_matrix_raster(&self) -> [u8; 64] {
-        zigzag_to_raster_quant(self.intra_quantiser_matrix.as_ref().unwrap_or(&DEFAULT_INTRA_QUANT))
+        zigzag_to_raster_quant(
+            self.intra_quantiser_matrix
+                .as_ref()
+                .unwrap_or(&DEFAULT_INTRA_QUANT),
+        )
     }
 
     /// Effective non-intra-quantizer matrix in raster scan order.

@@ -113,7 +113,12 @@ fn mpeg2_first_slice_is_locatable() {
     let off = find_first_slice(FIXTURE).expect("at least one slice");
     // The first slice must come AFTER the picture header / extension.
     let codes = find_start_codes(FIXTURE);
-    let pic_off = codes.iter().find(|(c, _)| *c == START_CODE_PICTURE).unwrap().1 - 4;
+    let pic_off = codes
+        .iter()
+        .find(|(c, _)| *c == START_CODE_PICTURE)
+        .unwrap()
+        .1
+        - 4;
     assert!(off > pic_off);
 }
 
