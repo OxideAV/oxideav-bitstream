@@ -42,6 +42,8 @@ pub mod av1;
 pub mod bit_reader;
 pub mod h264;
 pub mod hevc;
+pub mod ivf;
+pub mod vp8;
 
 /// Errors produced by the parsers in this crate.
 ///
