@@ -13,8 +13,8 @@
 //! filler byte so `split_annex_b` actually has a body to slice.
 
 use oxideav_bitstream::h266::{
-    is_irap, is_parameter_set, is_vcl, parse_nal_header, split_annex_b, NAL_TYPE_IDR_W_RADL,
-    NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_sps, split_annex_b,
+    NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
 /// Build a 2-byte VVC NAL header for `(nal_unit_type, nuh_layer_id,
@@ -77,6 +77,39 @@ fn walks_synthetic_au_with_vps_sps_pps_ph_idr() {
     assert!(!is_vcl(parsed[3].nal_unit_type));
     assert!(is_vcl(parsed[4].nal_unit_type));
     assert!(is_irap(parsed[4].nal_unit_type));
+}
+
+#[test]
+fn walks_au_and_parses_sps_structural_fields() {
+    // VPS + SPS + IDR_W_RADL with a structural 1920×1080 10-bit
+    // 4:2:0 / no-PTL SPS body. Demonstrates that a HW bridge can
+    // run `split_annex_b` → `parse_nal_header` → `parse_sps` to
+    // recover the geometry fields it needs.
+    let sps_rbsp: [u8; 9] = [0x00, 0x0c, 0x00, 0x0f, 0x02, 0x00, 0x43, 0x91, 0x80];
+    let mut sps_nal = Vec::new();
+    sps_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_SPS, 0, 1));
+    sps_nal.extend_from_slice(&sps_rbsp);
+
+    let mut stream = Vec::new();
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_VPS, 0, 1), 0xa1);
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&sps_nal);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0xa5);
+
+    let nals = split_annex_b(&stream);
+    assert_eq!(nals.len(), 3);
+
+    let sps_body = nals
+        .iter()
+        .find(|n| parse_nal_header(n).map(|h| h.nal_unit_type) == Ok(NAL_TYPE_SPS))
+        .expect("SPS NAL present");
+
+    let sps = parse_sps(sps_body).expect("SPS parses");
+    assert_eq!(sps.sps_pic_width_max_in_luma_samples, 1920);
+    assert_eq!(sps.sps_pic_height_max_in_luma_samples, 1080);
+    assert_eq!(sps.sps_chroma_format_idc, 1);
+    assert_eq!(sps.bit_depth(), 10);
+    assert_eq!(sps.ctb_size_y(), 128);
 }
 
 #[test]

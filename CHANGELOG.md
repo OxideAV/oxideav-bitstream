@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- H.266 / VVC SPS structural parse (ITU-T H.266 (V4) (01/2026) §7.3.2.4
+  + §7.3.3.1 + §7.3.3.2). New `parse_sps()` decodes the fixed-prefix
+  geometry fields (`sps_seq_parameter_set_id`,
+  `sps_video_parameter_set_id`, `sps_max_sublayers_minus1`,
+  `sps_chroma_format_idc`, `sps_log2_ctu_size_minus5`,
+  `sps_ptl_dpb_hrd_params_present_flag`,
+  `sps_pic_width_max_in_luma_samples`,
+  `sps_pic_height_max_in_luma_samples`, `sps_subpic_info_present_flag`,
+  `sps_bitdepth_minus8`) plus an optional `profile_tier_level()` decode
+  (general profile/tier/level codes, per-sublayer level codes,
+  `ptl_num_sub_profiles` + `general_sub_profile_idc[]`). The
+  `general_constraints_info()` block (7.3.3.2) is walked so the
+  reader stays positioned, but its individual constraint flags are
+  not surfaced. SPSs that use subpicture signalling
+  (`sps_subpic_info_present_flag = 1`) return
+  `BitstreamError::Unsupported` until a later round implements the
+  subpic walk. Three new lib tests and one new integration test
+  exercise the path (no-PTL 1080p Main10 fixture, 4K Main10 fixture
+  with PTL + 2× sub-profile + sublayer level, subpic = 1 fixture,
+  truncated + wrong-NAL-type negative cases, end-to-end Annex-B
+  AU walk through `split_annex_b` + `parse_sps`).
 - New `h266` module: H.266 / VVC structural NAL-walker (ITU-T H.266
   (V4) (01/2026) §7.3.1.1 / §7.3.1.2 / §7.4.2.2 Table 5). Covers
   Annex-B start-code splitter (3- and 4-byte forms), EBSP-to-RBSP
