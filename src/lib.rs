@@ -14,6 +14,9 @@
 //! - [`h264`] — Annex-B framing, SPS, PPS and minimal slice header.
 //! - [`hevc`] — Annex-B framing, VPS, SPS, PPS and minimal slice
 //!   segment header.
+//! - [`h266`] — Annex-B framing, 2-byte NAL header decode, VCL /
+//!   IRAP / parameter-set classifiers. Parameter-set parsing
+//!   deferred to future rounds.
 //! - [`av1`] — leb128 reader, OBU walker, sequence header and
 //!   key-frame OBU parsing.
 //!
@@ -41,6 +44,7 @@
 pub mod av1;
 pub mod bit_reader;
 pub mod h264;
+pub mod h266;
 pub mod hevc;
 pub mod ivf;
 pub mod mpeg2;

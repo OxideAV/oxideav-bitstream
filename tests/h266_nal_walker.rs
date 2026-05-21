@@ -1,0 +1,98 @@
+//! H.266 / VVC NAL-walker integration test.
+//!
+//! No bitstream fixture is required at this level: the walker is
+//! purely structural (Annex-B framing + 2-byte NAL header decode +
+//! VCL / IRAP / parameter-set classifiers). We synthesise a minimal
+//! stream covering one VPS, one SPS, one PPS, one picture header,
+//! and one IDR_W_RADL VCL NAL — exactly what a future
+//! `parse_irap_only` would need to locate to begin VVC decode.
+//!
+//! All field encodings follow ITU-T H.266 7.3.1.2 (NAL unit header
+//! syntax) and 7.4.2.2 Table 5 (NAL unit type codes). Each NAL body
+//! is prefixed with the two-byte header and then padded with one
+//! filler byte so `split_annex_b` actually has a body to slice.
+
+use oxideav_bitstream::h266::{
+    is_irap, is_parameter_set, is_vcl, parse_nal_header, split_annex_b, NAL_TYPE_IDR_W_RADL,
+    NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+};
+
+/// Build a 2-byte VVC NAL header for `(nal_unit_type, nuh_layer_id,
+/// nuh_temporal_id_plus1)`. Forbidden + reserved zero bits are
+/// always 0.
+fn vvc_hdr(nal_unit_type: u8, layer_id: u8, tid_plus1: u8) -> [u8; 2] {
+    assert!(nal_unit_type < 32, "nal_unit_type is u(5)");
+    assert!(layer_id < 64, "nuh_layer_id is u(6)");
+    assert!(tid_plus1 < 8, "nuh_temporal_id_plus1 is u(3)");
+    let b0 = layer_id & 0x3f;
+    let b1 = ((nal_unit_type & 0x1f) << 3) | (tid_plus1 & 0x7);
+    [b0, b1]
+}
+
+fn push_nal(stream: &mut Vec<u8>, hdr: [u8; 2], filler: u8) {
+    // Four-byte start code followed by header + one filler byte body.
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&hdr);
+    stream.push(filler);
+}
+
+#[test]
+fn walks_synthetic_au_with_vps_sps_pps_ph_idr() {
+    let mut stream = Vec::new();
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_VPS, 0, 1), 0xa1);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_SPS, 0, 1), 0xa2);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_PPS, 0, 1), 0xa3);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_PH, 0, 1), 0xa4);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0xa5);
+
+    let nals = split_annex_b(&stream);
+    assert_eq!(nals.len(), 5, "expected five NALs in the synthetic AU");
+
+    let parsed: Vec<_> = nals
+        .iter()
+        .map(|n| parse_nal_header(n).expect("two-byte NAL header"))
+        .collect();
+
+    // Order matches the order we pushed.
+    assert_eq!(parsed[0].nal_unit_type, NAL_TYPE_VPS);
+    assert_eq!(parsed[1].nal_unit_type, NAL_TYPE_SPS);
+    assert_eq!(parsed[2].nal_unit_type, NAL_TYPE_PPS);
+    assert_eq!(parsed[3].nal_unit_type, NAL_TYPE_PH);
+    assert_eq!(parsed[4].nal_unit_type, NAL_TYPE_IDR_W_RADL);
+
+    // Every header decoded to layer 0, temporal_id 0.
+    for h in &parsed {
+        assert_eq!(h.forbidden_zero_bit, 0);
+        assert_eq!(h.nuh_reserved_zero_bit, 0);
+        assert_eq!(h.nuh_layer_id, 0);
+        assert_eq!(h.temporal_id(), 0);
+    }
+
+    // VPS/SPS/PPS classify as parameter sets, the IDR classifies as
+    // both VCL and IRAP, the PH is neither VCL nor a parameter set.
+    assert!(is_parameter_set(parsed[0].nal_unit_type));
+    assert!(is_parameter_set(parsed[1].nal_unit_type));
+    assert!(is_parameter_set(parsed[2].nal_unit_type));
+    assert!(!is_parameter_set(parsed[3].nal_unit_type));
+    assert!(!is_vcl(parsed[3].nal_unit_type));
+    assert!(is_vcl(parsed[4].nal_unit_type));
+    assert!(is_irap(parsed[4].nal_unit_type));
+}
+
+#[test]
+fn walker_first_irap_helper_pattern() {
+    // Demonstrate the canonical "find first IRAP NAL" pattern a
+    // downstream HW bridge would write against this module.
+    let mut stream = Vec::new();
+    // A leading TRAIL (decoded VCL, not IRAP).
+    push_nal(&mut stream, vvc_hdr(0, 0, 1), 0x10); // TRAIL
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_VPS, 0, 1), 0x20);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0x30);
+
+    let first_irap = split_annex_b(&stream)
+        .into_iter()
+        .filter_map(|n| parse_nal_header(n).ok())
+        .find(|h| is_irap(h.nal_unit_type));
+    assert!(first_irap.is_some(), "should locate IDR_W_RADL");
+    assert_eq!(first_irap.unwrap().nal_unit_type, NAL_TYPE_IDR_W_RADL);
+}

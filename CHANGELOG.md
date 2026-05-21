@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `h266` module: H.266 / VVC structural NAL-walker (ITU-T H.266
+  (V4) (01/2026) §7.3.1.1 / §7.3.1.2 / §7.4.2.2 Table 5). Covers
+  Annex-B start-code splitter (3- and 4-byte forms), EBSP-to-RBSP
+  emulation-prevention stripper, two-byte `nal_unit_header()` decode
+  (`forbidden_zero_bit`, `nuh_reserved_zero_bit`, `nuh_layer_id`,
+  `nal_unit_type`, `nuh_temporal_id_plus1`, `TemporalId` derived),
+  the full set of `NAL_TYPE_*` constants from Table 5, and the
+  `is_vcl` / `is_irap` / `is_parameter_set` classifiers. Parameter-set
+  / picture-header parsing deferred to later rounds when the HW-accel
+  bridges grow VVC support. New integration test
+  `tests/h266_nal_walker.rs` walks a synthetic VPS / SPS / PPS / PH /
+  IDR_W_RADL access unit end-to-end.
 - HEVC PPS parser extended past `entropy_coding_sync_enabled_flag`
   (9 new fields: `pps_loop_filter_across_slices_enabled_flag`,
   `deblocking_filter_control_present_flag`,

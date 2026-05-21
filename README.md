@@ -27,33 +27,41 @@ three HW bridges share, without the SW-codec baggage.
 
 ## Scope
 
-| | H.264 | HEVC | AV1 |
-| - | - | - | - |
-| Annex-B / OBU framing | yes | yes | yes (leb128 sizes) |
-| Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | yes | yes | yes |
-| Picture header (PPS / Frame-Header OBU) | yes | yes | yes |
-| Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | yes |
-| DCT, entropy decode, motion compensation, in-loop filtering | no | no | no |
-| Scaling lists | rejected | rejected | n/a |
-| FMO / ASO / multiple slice groups | rejected | n/a | n/a |
-| Tiles / WPP | n/a | rejected | n/a |
-| AV1 decoder model / operating points beyond [0] / film grain | n/a | n/a | rejected |
+| | H.264 | HEVC | H.266 | AV1 |
+| - | - | - | - | - |
+| Annex-B / OBU framing | yes | yes | yes | yes (leb128 sizes) |
+| NAL header decode | yes | yes | yes | n/a |
+| Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | yes | yes | deferred | yes |
+| Picture header (PPS / Frame-Header OBU) | yes | yes | deferred | yes |
+| Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
+| DCT, entropy decode, motion compensation, in-loop filtering | no | no | no | no |
+| Scaling lists | rejected | rejected | n/a | n/a |
+| FMO / ASO / multiple slice groups | rejected | n/a | n/a | n/a |
+| Tiles / WPP | n/a | rejected | n/a | n/a |
+| AV1 decoder model / operating points beyond [0] / film grain | n/a | n/a | n/a | rejected |
 
 The crate refuses inputs that fall outside the supported envelope with
 `BitstreamError::Unsupported(reason)` rather than silently producing
 garbage parameter buffers.
 
-VP9 and MPEG-2 are deliberately deferred — when those back-ends grow,
-they'll join this crate as additional modules.
+H.266 (VVC), VP9, VP8, MPEG-2 and VC-1 have landed as additional
+modules; their scope is incremental — see each module's rustdoc for
+what's parsed today versus deferred.
 
 ## Module layout
 
 ```
 src/
-├── lib.rs           # re-exports h264, hevc, av1 + BitstreamError
+├── lib.rs           # re-exports each codec module + BitstreamError
 ├── bit_reader.rs    # shared u(n) / ue(v) / se(v) reader
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
+├── h266.rs          # H.266 Annex-B walker + 2-byte NAL header decode
+├── mpeg2.rs         # MPEG-2 sequence + picture + extension headers
+├── vc1.rs           # VC-1 sequence + entry-point + picture header
+├── vp8.rs           # VP8 keyframe header + IVF demuxer
+├── vp9.rs           # VP9 uncompressed header
+├── ivf.rs           # IVF frame demuxer (VP8 / VP9 / AV1 fixtures)
 └── av1.rs           # AV1 leb128 + OBU walker + key-frame headers
 ```
 
@@ -76,7 +84,11 @@ relevant spec PDFs:
 
 - ITU-T H.264 (a.k.a. ISO/IEC 14496-10 — AVC),
 - ITU-T H.265 (a.k.a. ISO/IEC 23008-2 — HEVC),
-- AV1 Bitstream & Decoding Process Specification (av1.org).
+- ITU-T H.266 (a.k.a. ISO/IEC 23090-3 — VVC),
+- ITU-T H.262 (a.k.a. ISO/IEC 13818-2 — MPEG-2),
+- SMPTE ST 421 (VC-1),
+- AV1 Bitstream & Decoding Process Specification (av1.org),
+- RFC 6386 (VP8 Data Format and Decoding Guide).
 
 Following a public spec PDF is the canonical clean-room move and is
 allowed under the workspace policy. We deliberately do **not** consult
