@@ -13,7 +13,7 @@
 //! filler byte so `split_annex_b` actually has a body to slice.
 
 use oxideav_bitstream::h266::{
-    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_sps, split_annex_b,
+    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_pps, parse_sps, split_annex_b,
     NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
@@ -110,6 +110,45 @@ fn walks_au_and_parses_sps_structural_fields() {
     assert_eq!(sps.sps_chroma_format_idc, 1);
     assert_eq!(sps.bit_depth(), 10);
     assert_eq!(sps.ctb_size_y(), 128);
+}
+
+#[test]
+fn walks_au_and_parses_pps_structural_fields() {
+    // VPS + SPS + PPS + IDR_W_RADL with a structural PPS body
+    // (64×32, no conformance/scaling windows, output_flag_present = 1,
+    // no_pic_partition = 1, subpic_id_mapping = 0). Demonstrates that
+    // a HW bridge can run `split_annex_b` → `parse_nal_header` →
+    // `parse_pps` to recover the per-picture geometry fields.
+    let pps_rbsp: [u8; 6] = [0x00, 0x00, 0x41, 0x04, 0x26, 0x80];
+    let mut pps_nal = Vec::new();
+    pps_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_PPS, 0, 1));
+    pps_nal.extend_from_slice(&pps_rbsp);
+
+    let mut stream = Vec::new();
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_VPS, 0, 1), 0xa1);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_SPS, 0, 1), 0xa2);
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&pps_nal);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0xa5);
+
+    let nals = split_annex_b(&stream);
+    assert_eq!(nals.len(), 4);
+
+    let pps_body = nals
+        .iter()
+        .find(|n| parse_nal_header(n).map(|h| h.nal_unit_type) == Ok(NAL_TYPE_PPS))
+        .expect("PPS NAL present");
+
+    let pps = parse_pps(pps_body).expect("PPS parses");
+    assert_eq!(pps.pps_pic_parameter_set_id, 0);
+    assert_eq!(pps.pps_seq_parameter_set_id, 0);
+    assert_eq!(pps.pps_pic_width_in_luma_samples, 64);
+    assert_eq!(pps.pps_pic_height_in_luma_samples, 32);
+    assert_eq!(pps.pps_conformance_window_flag, 0);
+    assert_eq!(pps.pps_scaling_window_explicit_signalling_flag, 0);
+    assert_eq!(pps.pps_output_flag_present_flag, 1);
+    assert_eq!(pps.pps_no_pic_partition_flag, 1);
+    assert_eq!(pps.pps_subpic_id_mapping_present_flag, 0);
 }
 
 #[test]

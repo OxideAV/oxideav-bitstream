@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- H.266 / VVC PPS structural parse (ITU-T H.266 (V4) (01/2026) §7.3.2.5).
+  New `parse_pps()` decodes the fixed-prefix fields a HW bridge needs:
+  `pps_pic_parameter_set_id`, `pps_seq_parameter_set_id`,
+  `pps_mixed_nalu_types_in_pic_flag`, `pps_pic_width_in_luma_samples`,
+  `pps_pic_height_in_luma_samples`, `pps_conformance_window_flag` plus
+  the four optional `pps_conf_win_*_offset` ue(v) values,
+  `pps_scaling_window_explicit_signalling_flag` plus the four optional
+  signed `pps_scaling_win_*_offset` se(v) values,
+  `pps_output_flag_present_flag`, `pps_no_pic_partition_flag`, and
+  `pps_subpic_id_mapping_present_flag`. Parsing stops there — the
+  remaining tile / slice partitioning, cabac, weighted-pred and
+  deblocking blocks are deferred to later rounds. Five new lib tests
+  cover the 64×32 minimal fixture, a 1920×1080 fixture with both
+  conformance + scaling windows at zero offsets, a 320×240 fixture
+  with signed scaling-window offsets `(1, -2, 3, -4)` and
+  `pps_subpic_id_mapping_present_flag = 1`, plus truncated /
+  wrong-NAL-type negative cases. One new integration test walks an
+  Annex-B VPS + SPS + PPS + IDR_W_RADL AU end-to-end through
+  `split_annex_b` + `parse_pps`.
 - H.266 / VVC SPS structural parse (ITU-T H.266 (V4) (01/2026) §7.3.2.4
   + §7.3.3.1 + §7.3.3.2). New `parse_sps()` decodes the fixed-prefix
   geometry fields (`sps_seq_parameter_set_id`,
