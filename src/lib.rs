@@ -23,7 +23,8 @@
 //! There is no shared cross-codec abstraction in v0 — each module
 //! exposes its own `parse_*` entry points and result structs. The
 //! shared [`bit_reader::BitReader`] type provides `u(n)`, `ue(v)` and
-//! `se(v)` primitives.
+//! `se(v)` primitives; [`bit_writer::BitWriter`] is its MSB-first
+//! inverse for emitting the same fields back out.
 //!
 //! ## No `unsafe`
 //!
@@ -43,6 +44,7 @@
 
 pub mod av1;
 pub mod bit_reader;
+pub mod bit_writer;
 pub mod h264;
 pub mod h266;
 pub mod hevc;

@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `bit_writer::BitWriter` — an MSB-first bit writer that is the exact
+  algebraic inverse of `bit_reader::BitReader`. Provides `write_bit`,
+  `write_bits(u32, n)`, `write_bits_u64(u64, n)`, `write_ue`,
+  `write_se`, `align_to_byte`, `finish`/`as_bytes`. A value written at
+  bit offset `p` and read back at the same offset round-trips exactly,
+  so codec parsers can now re-emit the fields they parse without an
+  ad-hoc per-crate packer. `write_ue` rejects `u32::MAX` (no
+  representable code); `write_se` rejects magnitudes that overflow the
+  `2·|v|` mapping.
+- `tests/roundtrip_props.rs` — a dependency-free property/invariant
+  suite (deterministic LCG, fixed seeds) that exercises the foundational
+  primitives across their full ranges: `write_bits` → `u` for every
+  width 1..=32, `write_bits_u64` → `u64` for 1..=64, `ue`/`se` exact
+  inverses, mixed-field concatenation with no inter-field bleed,
+  byte-alignment symmetry between writer and reader, over-read past EOF
+  yielding zero and never panicking, `ue` over a malformed all-zero run
+  returning a clean `Err` (not a panic), and `read_leb128` round-trips
+  against a local LEB128 encoder plus truncated/offset-past-end clean
+  errors.
+- `fuzz/` cargo-fuzz crate with a `reader` target that drives
+  `BitReader` through an input-controlled opcode tape (reading far past
+  EOF), runs `read_leb128` at every offset and `parse_obu_stream` over
+  raw bytes, and asserts the `BitWriter` → `BitReader` round-trip on a
+  structured view of the input. None of the surfaces may panic.
+
+### Fixed
+
+- `bit_reader::BitReader::ue` could panic with "attempt to shift left
+  with overflow" on a 32-bit all-zero (or otherwise zero-padded) buffer:
+  the leading-zero loop exited via end-of-stream with `leading_zeros ==
+  32`, and the `1u32 << leading_zeros` term overflowed. The guard is now
+  `>= 32` (the largest representable `ue(v)` value is `u32::MAX - 1`, at
+  31 leading zeros) and the end-of-stream exit path is checked too, so a
+  32-or-more-leading-zero code returns `BitstreamError::InvalidData`
+  rather than panicking. Found by the new property suite.
+
 - H.266 / VVC PPS structural parse (ITU-T H.266 (V4) (01/2026) §7.3.2.5).
   New `parse_pps()` decodes the fixed-prefix fields a HW bridge needs:
   `pps_pic_parameter_set_id`, `pps_seq_parameter_set_id`,

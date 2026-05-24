@@ -101,17 +101,28 @@ impl<'a> BitReader<'a> {
     }
 
     /// Unsigned Exp-Golomb (`ue(v)`). H.264 9.1 / H.265 9.2.
-    /// Returns an error if more than 32 leading zeros are seen
-    /// (would overflow a `u32`).
+    /// Returns an error if 32 or more leading zeros are seen: the
+    /// largest representable `ue(v)` value is `u32::MAX - 1` (31 leading
+    /// zeros), so 32 leading zeros has no valid `u32` value and the
+    /// `1 << leadingZeros` term would overflow.
     pub fn ue(&mut self) -> Result<u32, BitstreamError> {
         let mut leading_zeros = 0u32;
         while !self.at_end() && self.read_bit() == 0 {
             leading_zeros += 1;
-            if leading_zeros > 32 {
+            if leading_zeros >= 32 {
                 return Err(BitstreamError::InvalidData(
-                    "ue(v): more than 32 leading zero bits".into(),
+                    "ue(v): 32 or more leading zero bits".into(),
                 ));
             }
+        }
+        // The loop can also exit by hitting end-of-stream after a run of
+        // zeros (every remaining bit was 0). Guard that path too so a
+        // 32-bit all-zero buffer can never reach the shift below with
+        // `leading_zeros == 32`.
+        if leading_zeros >= 32 {
+            return Err(BitstreamError::InvalidData(
+                "ue(v): 32 or more leading zero bits".into(),
+            ));
         }
         if leading_zeros == 0 {
             Ok(0)

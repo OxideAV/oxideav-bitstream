@@ -1,0 +1,40 @@
+[package]
+name = "oxideav-bitstream-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# oxideav-bitstream is the shared bit reader/writer + thin Annex-B /
+# OBU header parsers every codec leans on. This fuzz crate hammers the
+# foundational reader (`BitReader::u` / `u64` / `ue` / `se`) plus the
+# `read_leb128` and `parse_obu_stream` reader-driven entry points with
+# arbitrary attacker bytes — none of them may ever panic, overflow, or
+# index out of bounds. It also checks the `BitWriter` -> `BitReader`
+# round-trip on structured inputs so the inverse-pair invariant is
+# fuzzed, not just unit-tested.
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.oxideav-bitstream]
+path = ".."
+
+[lib]
+name = "oxideav_bitstream_fuzz"
+path = "src/lib.rs"
+
+# Prevent this from interfering with the umbrella workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "reader"
+path = "fuzz_targets/reader.rs"
+test = false
+doc = false
