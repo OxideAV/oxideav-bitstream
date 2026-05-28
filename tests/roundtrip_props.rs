@@ -320,6 +320,105 @@ fn leb128_roundtrips_against_local_encoder() {
 }
 
 #[test]
+fn peek_bits_equals_subsequent_u_for_every_width_and_offset() {
+    // Invariant: peek_bits(n) at offset p returns the same value as
+    // u(n) at offset p, but leaves the reader unmoved. Drive the
+    // assertion across many random buffers, every starting offset
+    // within the buffer, and every width 0..=32.
+    let mut rng = Lcg::new(0x1357_9bdf_2468_ace0);
+    for _ in 0..200 {
+        let len = (rng.next_u32() % 12) as usize + 4;
+        let bytes: Vec<u8> = (0..len).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+        for start in 0..(len * 8) {
+            for n in 0..=32u32 {
+                let mut r_peek = BitReader::new(&bytes);
+                r_peek.skip(start);
+                let peeked = r_peek.peek_bits(n);
+                assert_eq!(r_peek.bit_pos(), start, "peek must not advance");
+
+                let mut r_read = BitReader::new(&bytes);
+                r_read.skip(start);
+                let read = r_read.u(n);
+                assert_eq!(read, peeked, "peek/read mismatch start={start} n={n}");
+            }
+        }
+    }
+}
+
+#[test]
+fn rbsp_trailing_bits_roundtrips_at_every_bit_offset() {
+    // For each payload-bit count 0..=23 and each random payload value,
+    // build a buffer containing `payload || rbsp_stop_one_bit ||
+    // zero_alignment_bits` and check the reader: it consumes the
+    // payload via u(), then read_rbsp_trailing_bits() must succeed and
+    // leave the reader byte-aligned at end-of-stream.
+    let mut rng = Lcg::new(0x2222_3333_4444_5555);
+    for payload_bits in 0u32..=23 {
+        for _ in 0..200 {
+            let payload = rng.next_u32() & mask32(payload_bits);
+            let mut w = BitWriter::new();
+            if payload_bits > 0 {
+                w.write_bits(payload, payload_bits);
+            }
+            // rbsp_stop_one_bit followed by trailing alignment zeros.
+            w.write_bit(1);
+            w.align_to_byte();
+            let bytes = w.finish();
+
+            let mut r = BitReader::new(&bytes);
+            if payload_bits > 0 {
+                assert_eq!(r.u(payload_bits), payload);
+            }
+            r.read_rbsp_trailing_bits().unwrap();
+            assert!(r.byte_aligned());
+            assert!(r.at_end());
+        }
+    }
+}
+
+#[test]
+fn more_rbsp_data_tracks_payload_consumption() {
+    // For each payload-bit count `p` in 1..=15, build `payload ||
+    // stop_bit || zero_align` and verify: while strictly fewer than `p`
+    // payload bits have been read, more_rbsp_data() is true; once
+    // exactly `p` bits have been read (positioned at the stop bit),
+    // more_rbsp_data() is false.
+    let mut rng = Lcg::new(0x9999_aaaa_bbbb_cccc);
+    for p in 1u32..=15 {
+        for _ in 0..50 {
+            // Pick a payload whose final bit is `1` so the next `1`
+            // after the cursor (during payload) isn't ambiguously the
+            // stop bit — the more_rbsp_data scan handles both, but
+            // mixing the two would muddy this invariant. Force the LSB.
+            let payload = (rng.next_u32() & mask32(p)) | 1;
+            let mut w = BitWriter::new();
+            w.write_bits(payload, p);
+            w.write_bit(1);
+            w.align_to_byte();
+            let bytes = w.finish();
+
+            for consumed in 0..p {
+                let mut r = BitReader::new(&bytes);
+                if consumed > 0 {
+                    r.u(consumed);
+                }
+                assert!(
+                    r.more_rbsp_data(),
+                    "p={p} consumed={consumed} should still have more data"
+                );
+            }
+            // Consume exactly the payload; the next bit is the stop bit.
+            let mut r = BitReader::new(&bytes);
+            r.u(p);
+            assert!(
+                !r.more_rbsp_data(),
+                "after consuming {p} payload bits, no more data should remain"
+            );
+        }
+    }
+}
+
+#[test]
 fn leb128_truncated_is_clean_error() {
     // A continuation-bit-set byte with nothing after it must error, not
     // panic or index out of bounds.

@@ -53,7 +53,8 @@ what's parsed today versus deferred.
 ```
 src/
 ├── lib.rs           # re-exports each codec module + BitstreamError
-├── bit_reader.rs    # shared u(n) / ue(v) / se(v) reader
+├── bit_reader.rs    # shared u(n) / ue(v) / se(v) reader, peek_bits,
+│                    # more_rbsp_data, read_rbsp_trailing_bits
 ├── bit_writer.rs    # MSB-first writer — inverse of bit_reader
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header

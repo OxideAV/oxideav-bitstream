@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `bit_reader::BitReader::peek_bits(n)` — read `n` bits MSB-first
+  without advancing `bit_pos`, same past-the-end zero-fill contract as
+  `u(n)`. Lets codec parsers inspect a marker bit (e.g. an Annex-B
+  start-code prefix candidate or an OBU continuation indicator) before
+  committing to a branch.
+- `bit_reader::BitReader::more_rbsp_data()` — ITU-T H.264 §7.2 /
+  H.265 §7.2 / H.266 §7.2 `more_rbsp_data()` lifted from a private
+  function inside `h264.rs` to a first-class `BitReader` method. The
+  in-crate `h264::parse_pps` callsite now goes through the public API
+  instead of reaching at `pub(crate)` `bytes` / `bit_pos` fields, and
+  HEVC / H.266 RBSP-shaped parsers can use the same primitive without
+  duplicating the scan.
+- `bit_reader::BitReader::read_rbsp_trailing_bits()` — ITU-T H.264
+  §7.3.2.11 / H.265 §7.3.2.11 / H.266 §7.3.10 `rbsp_trailing_bits()`.
+  Consumes the `rbsp_stop_one_bit` and asserts every
+  `alignment_zero_bit` up to the next byte boundary is `0`, returning a
+  precise `InvalidData` / `UnexpectedEnd` on a malformed marker. Pairs
+  with `more_rbsp_data()` so a parser that wants strict marker
+  validation no longer needs an ad-hoc per-codec implementation.
+- Eleven unit tests on the three new methods (peek non-advancement,
+  past-end zero padding, minimal stop-byte case, payload-then-marker
+  flow, every malformed-marker error path) plus three new
+  `roundtrip_props.rs` invariants: `peek_bits` agrees with `u` at every
+  start offset for every width 0..=32 over many random buffers,
+  `rbsp_trailing_bits()` round-trips against `BitWriter` for every
+  payload length 0..=23, and `more_rbsp_data` flips from `true` to
+  `false` exactly as the payload is consumed.
+- The `fuzz/reader.rs` target now hammers `peek_bits`,
+  `more_rbsp_data`, and `read_rbsp_trailing_bits` on attacker bytes so
+  the foundational reader surface stays panic-free end-to-end.
+
+### Changed
+
+- `h264::parse_pps` no longer carries its own `more_rbsp_data` helper
+  that reached at `BitReader::bytes` / `bit_pos` through
+  `pub(crate)` visibility; it now calls the public method on the
+  reader. Behaviour is identical (the helper was lifted verbatim into
+  the reader), but the codec module no longer needs internal-visibility
+  access to its bit-IO dependency.
+
 - `bit_writer::BitWriter` — an MSB-first bit writer that is the exact
   algebraic inverse of `bit_reader::BitReader`. Provides `write_bit`,
   `write_bits(u32, n)`, `write_bits_u64(u64, n)`, `write_ue`,

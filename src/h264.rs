@@ -425,7 +425,7 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<H264Pps, BitstreamError> {
     pps.constrained_intra_pred_flag = r.u(1) != 0;
     pps.redundant_pic_cnt_present_flag = r.u(1) != 0;
 
-    if more_rbsp_data(&r) {
+    if r.more_rbsp_data() {
         pps.transform_8x8_mode_flag = r.u(1) != 0;
         let pic_scaling_matrix_present = r.u(1);
         if pic_scaling_matrix_present != 0 {
@@ -597,32 +597,6 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
         });
     }
     out
-}
-
-// ─────────────────────────── more_rbsp_data() ────────────────────────────────
-
-/// H.264 7.2 `more_rbsp_data()`. There is more RBSP data if the
-/// current bit position is not at the start of the trailing-bit
-/// marker (a `1` followed by 0..7 zero bits, byte-aligned). We scan
-/// forward looking for any `1` after the *next* `1` — if we find
-/// one, the next `1` was not the marker and there's more data.
-fn more_rbsp_data(r: &BitReader<'_>) -> bool {
-    let total_bits = r.bytes.len() * 8;
-    if r.bit_pos >= total_bits {
-        return false;
-    }
-    let mut saw_one = false;
-    for p in r.bit_pos..total_bits {
-        let b = (r.bytes[p / 8] >> (7 - (p % 8))) & 1;
-        if !saw_one {
-            if b == 1 {
-                saw_one = true;
-            }
-        } else if b == 1 {
-            return true;
-        }
-    }
-    false
 }
 
 // ─────────────────────────── Tests ───────────────────────────────────────────

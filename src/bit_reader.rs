@@ -100,6 +100,92 @@ impl<'a> BitReader<'a> {
         value
     }
 
+    /// Peek the next `n` bits MSB-first without advancing `bit_pos`.
+    /// `n` must be ≤ 32. Past-the-end bits are zero, identical to
+    /// [`BitReader::u`]'s contract. Useful for codec parsers that need
+    /// to inspect a marker bit before deciding whether to commit to a
+    /// branch.
+    pub fn peek_bits(&self, n: u32) -> u32 {
+        debug_assert!(n <= 32, "BitReader::peek_bits({n}) > 32 bits");
+        let mut value: u32 = 0;
+        let total = self.total_bits();
+        for offset in 0..n as usize {
+            let pos = self.bit_pos + offset;
+            let bit = if pos < total {
+                let byte_idx = pos / 8;
+                let shift = 7 - (pos % 8) as u32;
+                ((self.bytes[byte_idx] >> shift) & 1) as u32
+            } else {
+                0
+            };
+            value = (value << 1) | bit;
+        }
+        value
+    }
+
+    /// H.264 §7.2 / H.265 §7.2 / H.266 §7.2 `more_rbsp_data()`.
+    ///
+    /// Returns `true` if there is at least one more RBSP data bit
+    /// before the `rbsp_trailing_bits()` marker. The marker is a `1`
+    /// bit (the `rbsp_stop_one_bit`) followed by zero or more `0`
+    /// bits up to the next byte boundary, sitting at the end of the
+    /// RBSP. The algorithm: search forward from the current position
+    /// for any `1` bit after the *next* `1` — if we find one, the
+    /// next `1` was not the stop marker and there is more data.
+    ///
+    /// Returns `false` once positioned at or past the stop bit, and
+    /// at end-of-stream.
+    pub fn more_rbsp_data(&self) -> bool {
+        let total = self.total_bits();
+        if self.bit_pos >= total {
+            return false;
+        }
+        let mut saw_one = false;
+        for p in self.bit_pos..total {
+            let b = (self.bytes[p / 8] >> (7 - (p % 8))) & 1;
+            if !saw_one {
+                if b == 1 {
+                    saw_one = true;
+                }
+            } else if b == 1 {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// H.264 §7.3.2.11 / H.265 §7.3.2.11 / H.266 §7.3.10
+    /// `rbsp_trailing_bits()`. Consumes a `1` (`rbsp_stop_one_bit`)
+    /// followed by zero or more `0` bits up to the next byte
+    /// boundary. Returns `Err(InvalidData)` if the next bit is not
+    /// `1`, if any of the padding bits before the boundary is not
+    /// `0`, or if the stream ends before the marker is found.
+    pub fn read_rbsp_trailing_bits(&mut self) -> Result<(), BitstreamError> {
+        if self.at_end() {
+            return Err(BitstreamError::UnexpectedEnd(
+                "rbsp_trailing_bits: no bits left for stop bit".into(),
+            ));
+        }
+        if self.read_bit() != 1 {
+            return Err(BitstreamError::InvalidData(
+                "rbsp_trailing_bits: rbsp_stop_one_bit was 0".into(),
+            ));
+        }
+        while !self.byte_aligned() {
+            if self.at_end() {
+                return Err(BitstreamError::UnexpectedEnd(
+                    "rbsp_trailing_bits: stream ended before byte alignment".into(),
+                ));
+            }
+            if self.read_bit() != 0 {
+                return Err(BitstreamError::InvalidData(
+                    "rbsp_trailing_bits: alignment_zero_bit was 1".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Unsigned Exp-Golomb (`ue(v)`). H.264 9.1 / H.265 9.2.
     /// Returns an error if 32 or more leading zeros are seen: the
     /// largest representable `ue(v)` value is `u32::MAX - 1` (31 leading
@@ -207,5 +293,117 @@ mod tests {
         r.u(8);
         assert_eq!(r.u(8), 0);
         assert!(r.at_end());
+    }
+
+    #[test]
+    fn peek_bits_does_not_advance() {
+        let bytes = [0b1010_1100, 0b1111_0000];
+        let r0 = BitReader::new(&bytes);
+        assert_eq!(r0.peek_bits(4), 0b1010);
+        // Re-borrow as mutable to compare against a real read.
+        let mut r = BitReader::new(&bytes);
+        let peeked = r.peek_bits(8);
+        assert_eq!(peeked, 0b1010_1100);
+        assert_eq!(r.bit_pos(), 0);
+        assert_eq!(r.u(8), 0b1010_1100);
+    }
+
+    #[test]
+    fn peek_bits_past_end_is_zero_padded() {
+        let bytes = [0b1111_0000];
+        let mut r = BitReader::new(&bytes);
+        // Advance to bit 4; the next 4 payload bits are 0.
+        r.u(4);
+        assert_eq!(r.peek_bits(8), 0b0000_0000);
+        // Past the end entirely.
+        r.u(4);
+        assert_eq!(r.peek_bits(16), 0);
+    }
+
+    #[test]
+    fn more_rbsp_data_after_payload() {
+        // Three payload bits `101`, then `rbsp_stop_one_bit=1`, then
+        // 4 zero alignment bits = byte 0b1011_0000 = 0xB0.
+        let bytes = [0xB0];
+        let mut r = BitReader::new(&bytes);
+        assert!(r.more_rbsp_data(), "before payload there's more data");
+        r.u(1); // 1 (payload bit 0)
+        assert!(r.more_rbsp_data());
+        r.u(1); // 0 (payload bit 1)
+        assert!(r.more_rbsp_data());
+        r.u(1); // 1 (payload bit 2) — positioned at stop bit now
+        assert!(!r.more_rbsp_data());
+    }
+
+    #[test]
+    fn more_rbsp_data_minimal_stop_byte() {
+        // Just the stop byte (no payload): 0b1000_0000.
+        let bytes = [0x80];
+        let r = BitReader::new(&bytes);
+        assert!(
+            !r.more_rbsp_data(),
+            "stop-bit-only buffer has no further RBSP data"
+        );
+    }
+
+    #[test]
+    fn more_rbsp_data_at_end_is_false() {
+        let bytes = [0xff];
+        let mut r = BitReader::new(&bytes);
+        r.u(8);
+        assert!(!r.more_rbsp_data());
+    }
+
+    #[test]
+    fn read_rbsp_trailing_bits_accepts_minimal_marker() {
+        // 0b1000_0000: stop_one_bit + 7 zero alignment bits.
+        let bytes = [0x80];
+        let mut r = BitReader::new(&bytes);
+        r.read_rbsp_trailing_bits().unwrap();
+        assert!(r.byte_aligned());
+        assert!(r.at_end());
+    }
+
+    #[test]
+    fn read_rbsp_trailing_bits_after_payload() {
+        // 5 payload bits `10110`, stop bit, 2 zero pad → 0b1011_0100 = 0xB4.
+        let bytes = [0xB4];
+        let mut r = BitReader::new(&bytes);
+        // Consume the payload.
+        assert_eq!(r.u(5), 0b10110);
+        r.read_rbsp_trailing_bits().unwrap();
+        assert!(r.byte_aligned());
+        assert!(r.at_end());
+    }
+
+    #[test]
+    fn read_rbsp_trailing_bits_rejects_zero_stop_bit() {
+        let bytes = [0x00];
+        let mut r = BitReader::new(&bytes);
+        match r.read_rbsp_trailing_bits() {
+            Err(BitstreamError::InvalidData(msg)) => assert!(msg.contains("stop")),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_rbsp_trailing_bits_rejects_nonzero_alignment_bit() {
+        // stop bit + 0001 alignment (bit 4 from MSB is 1).
+        let bytes = [0b1000_1000];
+        let mut r = BitReader::new(&bytes);
+        match r.read_rbsp_trailing_bits() {
+            Err(BitstreamError::InvalidData(msg)) => assert!(msg.contains("alignment")),
+            other => panic!("expected InvalidData, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_rbsp_trailing_bits_rejects_empty_reader() {
+        let bytes: [u8; 0] = [];
+        let mut r = BitReader::new(&bytes);
+        match r.read_rbsp_trailing_bits() {
+            Err(BitstreamError::UnexpectedEnd(_)) => {}
+            other => panic!("expected UnexpectedEnd, got {other:?}"),
+        }
     }
 }
