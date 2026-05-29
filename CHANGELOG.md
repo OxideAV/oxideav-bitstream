@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- H.266 / VVC structural VPS parser (ITU-T H.266 (V4) (01/2026) §7.3.2.3).
+  New `parse_vps()` decodes the fixed-prefix fields a HW bridge needs:
+  `vps_video_parameter_set_id` u(4), `vps_max_layers_minus1` u(6),
+  `vps_max_sublayers_minus1` u(3), and the per-layer `vps_layer_id[i]`
+  u(6) array. The inter-layer dependency block, OLS configuration,
+  per-OLS PTL array, DPB and HRD parameter blocks, and the extension
+  flag are out of scope for this round — multi-layer VPSs
+  (`vps_max_layers_minus1 > 0`) return `BitstreamError::Unsupported`
+  so HW bridges fall back to a software path, and
+  `vps_max_sublayers_minus1 > 6` (out of §7.4.3.3 range) returns
+  `BitstreamError::InvalidData`. Seven new lib tests (minimal
+  single-layer fixture, single-layer with sublayers + non-zero
+  `vps_layer_id`, multi-layer Unsupported, out-of-range
+  sublayer-count InvalidData, wrong-NAL-type, truncated, and a
+  `BitWriter`-built round-trip fixture) plus one new integration
+  test walking a synthetic Annex-B VPS + SPS + IDR_W_RADL AU through
+  `split_annex_b` + `parse_vps`.
+
 - `bit_reader::BitReader::peek_bits(n)` — read `n` bits MSB-first
   without advancing `bit_pos`, same past-the-end zero-fill contract as
   `u(n)`. Lets codec parsers inspect a marker bit (e.g. an Annex-B

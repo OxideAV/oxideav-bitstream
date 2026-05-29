@@ -13,8 +13,8 @@
 //! filler byte so `split_annex_b` actually has a body to slice.
 
 use oxideav_bitstream::h266::{
-    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_pps, parse_sps, split_annex_b,
-    NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_pps, parse_sps, parse_vps,
+    split_annex_b, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
 /// Build a 2-byte VVC NAL header for `(nal_unit_type, nuh_layer_id,
@@ -149,6 +149,39 @@ fn walks_au_and_parses_pps_structural_fields() {
     assert_eq!(pps.pps_output_flag_present_flag, 1);
     assert_eq!(pps.pps_no_pic_partition_flag, 1);
     assert_eq!(pps.pps_subpic_id_mapping_present_flag, 0);
+}
+
+#[test]
+fn walks_au_and_parses_vps_structural_fields() {
+    // VPS + SPS + IDR_W_RADL where the VPS body carries the minimal
+    // single-layer structural prefix (vps_id = 1, max_layers_minus1 =
+    // 0, max_sublayers_minus1 = 0, vps_layer_id[0] = 0). Demonstrates
+    // that a HW bridge can run split_annex_b -> parse_nal_header ->
+    // parse_vps to recover the layer / sublayer count it needs.
+    let vps_rbsp: [u8; 3] = [0x10, 0x00, 0x00];
+    let mut vps_nal = Vec::new();
+    vps_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_VPS, 0, 1));
+    vps_nal.extend_from_slice(&vps_rbsp);
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&vps_nal);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_SPS, 0, 1), 0xa2);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0xa5);
+
+    let nals = split_annex_b(&stream);
+    assert_eq!(nals.len(), 3);
+
+    let vps_body = nals
+        .iter()
+        .find(|n| parse_nal_header(n).map(|h| h.nal_unit_type) == Ok(NAL_TYPE_VPS))
+        .expect("VPS NAL present");
+
+    let vps = parse_vps(vps_body).expect("VPS parses");
+    assert_eq!(vps.vps_video_parameter_set_id, 1);
+    assert_eq!(vps.vps_max_layers_minus1, 0);
+    assert_eq!(vps.vps_max_sublayers_minus1, 0);
+    assert_eq!(vps.vps_layer_id, vec![0]);
 }
 
 #[test]
