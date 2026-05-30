@@ -17,8 +17,8 @@
 //! - [`h266`] — Annex-B framing, 2-byte NAL header decode, VCL /
 //!   IRAP / parameter-set classifiers. Parameter-set parsing
 //!   deferred to future rounds.
-//! - [`av1`] — leb128 reader, OBU walker, sequence header and
-//!   key-frame OBU parsing.
+//! - [`av1`] — leb128 reader/writer, OBU walker + emitter, sequence
+//!   header and key-frame OBU parsing.
 //!
 //! There is no shared cross-codec abstraction in v0 — each module
 //! exposes its own `parse_*` entry points and result structs. The

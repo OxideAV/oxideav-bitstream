@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `av1::write_obu` — the inverse of `av1::read_obu`. Builds a
+  fully-framed OBU (`obu_header [obu_extension_header] obu_size payload`)
+  from an `ObuHeader` + payload byte slice and appends it to a
+  caller-provided `Vec<u8>`, returning the `(start, end)` byte range
+  covering the framed OBU. Round-trip contract: feeding `start` back
+  through `read_obu` reproduces the same `ObuHeader`, a payload range
+  whose length matches `payload.len()`, and `next_offset == end`. The
+  emitter validates every spec-required bit-field width up-front (`obu_type`
+  ≤ 15, `temporal_id` ≤ 7, `spatial_id` ≤ 3, payload size ≤
+  `LEB128_MAX`) and refuses non-zero `temporal_id`/`spatial_id` paired
+  with `extension_flag=0` (which the reader would silently zero), so
+  the inverse pair is total. LOBF's `obu_has_size_field=1` requirement
+  is enforced. Buffer is left untouched on rejection. Three new public
+  width-bound constants (`OBU_TYPE_MAX`, `OBU_TEMPORAL_ID_MAX`,
+  `OBU_SPATIAL_ID_MAX`) document the field widths. Ten new av1 unit
+  tests cover the empty-TD canonical form, payload-size round-trips at
+  the 1-byte / 2-byte size-field boundaries (0, 1, 16, 127, 128, 1024),
+  the full Cartesian product of legal `(temporal_id, spatial_id)`
+  pairs through the extension byte, append-without-clobber, every
+  validation rejection path (size-field-clear, oversized `obu_type`,
+  oversized `temporal_id`/`spatial_id`, non-zero IDs without extension
+  flag), multi-byte leb128 size emission, the max-legal-IDs corner,
+  and a two-OBU concatenation walk.
+- Three new `roundtrip_props.rs` invariants exercising `write_obu`: a
+  400-iteration random-payload round-trip against `read_obu` across all
+  seven canonical OBU types and the LCG-shuffled extension-byte ID
+  space; a validator that every documented rejection path returns
+  `InvalidData` with the buffer untouched; and a 32-OBU concatenation
+  that walks the entire synthetic temporal unit back through `read_obu`
+  in lock-step, asserting the `next_offset` chain `parse_obu_stream`
+  itself depends on.
+- The `fuzz/reader.rs` target now hammers `write_obu` alongside the
+  other writer surfaces — pulling shape bytes out of attacker input to
+  drive `(obu_type, extension_flag, temporal_id, spatial_id,
+  payload_len)`, asserting either `write_obu → read_obu == identity`
+  on accepted inputs or a buffer-preserving clean error on rejected
+  ones.
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.1...v0.0.2) - 2026-05-30
 
 ### Other

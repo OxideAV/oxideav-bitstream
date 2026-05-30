@@ -19,7 +19,11 @@
 //!   returns a clean error rather than panicking.
 //! * `read_leb128` round-trips against a local LEB128 encoder.
 
-use oxideav_bitstream::av1::{read_leb128, write_leb128, LEB128_MAX};
+use oxideav_bitstream::av1::{
+    read_leb128, read_obu, write_leb128, write_obu, ObuHeader, LEB128_MAX, OBU_FRAME,
+    OBU_FRAME_HEADER, OBU_METADATA, OBU_PADDING, OBU_SEQUENCE_HEADER, OBU_SPATIAL_ID_MAX,
+    OBU_TEMPORAL_DELIMITER, OBU_TEMPORAL_ID_MAX, OBU_TILE_GROUP, OBU_TYPE_MAX,
+};
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::BitstreamError;
@@ -491,6 +495,161 @@ fn write_leb128_appends_to_existing_buffer() {
     assert_eq!(val, 12_345);
     assert_eq!(consumed, n);
     assert_eq!(buf.len(), 3 + n);
+}
+
+#[test]
+fn write_obu_round_trips_against_read_obu_over_random_payloads() {
+    // Invariant: for every (header, payload) the writer accepts, read_obu
+    // recovers the same header, the payload byte range matches, and the
+    // computed next_offset lands exactly at the end of the framed OBU.
+    let mut rng = Lcg::new(0xc0de_cafe_1234_5678);
+    let obu_types: [u8; 7] = [
+        OBU_SEQUENCE_HEADER,
+        OBU_TEMPORAL_DELIMITER,
+        OBU_FRAME_HEADER,
+        OBU_TILE_GROUP,
+        OBU_METADATA,
+        OBU_FRAME,
+        OBU_PADDING,
+    ];
+    for _ in 0..400 {
+        let obu_type = obu_types[(rng.next_u32() as usize) % obu_types.len()];
+        let extension_flag = rng.next_u32() & 1 != 0;
+        let (temporal_id, spatial_id) = if extension_flag {
+            (
+                (rng.next_u32() as u8) & OBU_TEMPORAL_ID_MAX,
+                (rng.next_u32() as u8) & OBU_SPATIAL_ID_MAX,
+            )
+        } else {
+            (0, 0)
+        };
+        let header = ObuHeader {
+            obu_type,
+            extension_flag,
+            has_size_field: true,
+            temporal_id,
+            spatial_id,
+        };
+        // Bounded payload length — sweep across single-byte, multi-byte,
+        // and 7-bit-boundary-crossing size-field encodings.
+        let len = (rng.next_u32() % 600) as usize;
+        let payload: Vec<u8> = (0..len).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+
+        let mut out = Vec::new();
+        let (start, end) = write_obu(&mut out, header, &payload).unwrap();
+        let (got, p_start, p_end, next) = read_obu(&out, start).unwrap();
+        assert_eq!(got, header, "header round-trip");
+        assert_eq!(p_end - p_start, payload.len(), "payload size matches");
+        assert_eq!(&out[p_start..p_end], payload.as_slice(), "payload bytes");
+        assert_eq!(next, end, "next_offset matches reported end");
+    }
+}
+
+#[test]
+fn write_obu_validates_field_widths() {
+    // Every field has a precise bit width per §5.3.2 / §5.3.3; values
+    // above the cap must be rejected with an InvalidData error and the
+    // output buffer left untouched.
+    let h_ok = ObuHeader {
+        obu_type: OBU_TEMPORAL_DELIMITER,
+        extension_flag: false,
+        has_size_field: true,
+        temporal_id: 0,
+        spatial_id: 0,
+    };
+
+    // obu_type > 15.
+    let mut h = h_ok;
+    h.obu_type = OBU_TYPE_MAX + 1;
+    let mut buf = Vec::new();
+    assert!(write_obu(&mut buf, h, &[]).is_err());
+    assert!(buf.is_empty());
+
+    // has_size_field=false (LOBF requires =1).
+    let mut h = h_ok;
+    h.has_size_field = false;
+    let mut buf = Vec::new();
+    assert!(write_obu(&mut buf, h, &[]).is_err());
+    assert!(buf.is_empty());
+
+    // temporal_id > 7 with extension_flag=true.
+    let h = ObuHeader {
+        obu_type: OBU_FRAME,
+        extension_flag: true,
+        has_size_field: true,
+        temporal_id: OBU_TEMPORAL_ID_MAX + 1,
+        spatial_id: 0,
+    };
+    let mut buf = Vec::new();
+    assert!(write_obu(&mut buf, h, &[]).is_err());
+    assert!(buf.is_empty());
+
+    // spatial_id > 3 with extension_flag=true.
+    let h = ObuHeader {
+        obu_type: OBU_FRAME,
+        extension_flag: true,
+        has_size_field: true,
+        temporal_id: 0,
+        spatial_id: OBU_SPATIAL_ID_MAX + 1,
+    };
+    let mut buf = Vec::new();
+    assert!(write_obu(&mut buf, h, &[]).is_err());
+    assert!(buf.is_empty());
+
+    // Non-zero IDs with extension_flag=false silently lose info in the
+    // reader; the writer rejects them.
+    let h = ObuHeader {
+        obu_type: OBU_FRAME,
+        extension_flag: false,
+        has_size_field: true,
+        temporal_id: 1,
+        spatial_id: 0,
+    };
+    let mut buf = Vec::new();
+    assert!(write_obu(&mut buf, h, &[]).is_err());
+    assert!(buf.is_empty());
+}
+
+#[test]
+fn write_obu_concatenated_stream_is_walkable_by_read_obu() {
+    // Build a synthetic temporal unit out of several OBUs and walk it
+    // back end-to-end. This exercises the `next_offset` chain that
+    // `parse_obu_stream` itself depends on.
+    let mut rng = Lcg::new(0x4242_4242_8888_8888);
+    let mut out = Vec::new();
+    let mut expectations: Vec<(ObuHeader, Vec<u8>)> = Vec::new();
+    for _ in 0..32 {
+        let obu_type = ((rng.next_u32() as u8) & 0x7).min(OBU_TYPE_MAX); // type in 0..=7
+        let extension_flag = rng.next_u32() & 1 != 0;
+        let (temporal_id, spatial_id) = if extension_flag {
+            (
+                (rng.next_u32() as u8) & OBU_TEMPORAL_ID_MAX,
+                (rng.next_u32() as u8) & OBU_SPATIAL_ID_MAX,
+            )
+        } else {
+            (0, 0)
+        };
+        let header = ObuHeader {
+            obu_type,
+            extension_flag,
+            has_size_field: true,
+            temporal_id,
+            spatial_id,
+        };
+        let len = (rng.next_u32() % 50) as usize;
+        let payload: Vec<u8> = (0..len).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+        write_obu(&mut out, header, &payload).unwrap();
+        expectations.push((header, payload));
+    }
+
+    let mut offset = 0;
+    for (expected_header, expected_payload) in &expectations {
+        let (h, ps, pe, next) = read_obu(&out, offset).unwrap();
+        assert_eq!(&h, expected_header);
+        assert_eq!(&out[ps..pe], expected_payload.as_slice());
+        offset = next;
+    }
+    assert_eq!(offset, out.len(), "walked exactly to end-of-stream");
 }
 
 #[test]

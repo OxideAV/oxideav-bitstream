@@ -25,7 +25,10 @@
 //!   the writer/reader inverse-pair contract.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_bitstream::av1::{parse_obu_stream, read_leb128, write_leb128, LEB128_MAX};
+use oxideav_bitstream::av1::{
+    parse_obu_stream, read_leb128, read_obu, write_leb128, write_obu, ObuHeader, LEB128_MAX,
+    OBU_SPATIAL_ID_MAX, OBU_TEMPORAL_ID_MAX, OBU_TYPE_MAX,
+};
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
 
@@ -55,6 +58,12 @@ fuzz_target!(|data: &[u8]| {
     //    writer refuses anything above LEB128_MAX, so mask the candidate
     //    value into the legal envelope.
     leb128_writer_roundtrip(data);
+
+    // 6. write_obu round-trip: synthesise OBU headers + payload slices
+    //    from the attacker bytes, frame them with write_obu, and assert
+    //    read_obu reproduces the same header + payload range — or that
+    //    rejected headers leave the buffer untouched.
+    obu_writer_roundtrip(data);
 });
 
 /// Treat `data` as an opcode tape and a payload simultaneously, running
@@ -149,6 +158,70 @@ fn roundtrip_fields(data: &[u8]) {
             got, expected,
             "writer/reader round-trip mismatch for width {width}"
         );
+    }
+}
+
+/// Carve `data` into header-descriptor + payload chunks and exercise
+/// `write_obu`. Each iteration synthesises:
+///
+/// * 1 byte of "shape" bits that pick `obu_type`, `extension_flag`,
+///   `temporal_id`, `spatial_id`, and a payload-length scaler;
+/// * `payload_len` payload bytes from the rest of `data`.
+///
+/// The invariant: when `write_obu` returns Ok, feeding the framed bytes
+/// back through `read_obu` reproduces the header and payload exactly. On
+/// any Err (e.g. validation rejects oversized IDs), the output buffer
+/// must be untouched.
+fn obu_writer_roundtrip(data: &[u8]) {
+    let mut cursor = 0usize;
+    let mut rounds = 0usize;
+    while cursor < data.len() && rounds < 64 {
+        rounds += 1;
+        // Pull 1 shape byte from `data` (cycle if exhausted).
+        let shape = data[cursor % data.len()];
+        cursor = cursor.saturating_add(1);
+
+        // Derive header fields from the shape byte.
+        let obu_type = (shape & 0x0f).min(OBU_TYPE_MAX);
+        let extension_flag = shape & 0x10 != 0;
+        let (temporal_id, spatial_id) = if extension_flag {
+            (
+                (shape >> 5) & OBU_TEMPORAL_ID_MAX,
+                ((shape >> 4) & 0b11) & OBU_SPATIAL_ID_MAX,
+            )
+        } else {
+            (0, 0)
+        };
+        let header = ObuHeader {
+            obu_type,
+            extension_flag,
+            has_size_field: true,
+            temporal_id,
+            spatial_id,
+        };
+        // Cap payload at 32 bytes for fuzz performance; longer payloads
+        // are well-exercised by the property test.
+        let payload_len = (shape >> 6) as usize * 8 + 1; // 1, 9, 17, 25
+        let payload_len = payload_len.min(data.len().saturating_sub(cursor));
+        let payload = &data[cursor..cursor.saturating_add(payload_len)];
+        cursor = cursor.saturating_add(payload_len);
+
+        let mut out = Vec::new();
+        match write_obu(&mut out, header, payload) {
+            Ok((start, end)) => {
+                assert_eq!(start, 0);
+                assert_eq!(end, out.len());
+                let (got, ps, pe, next) =
+                    read_obu(&out, start).expect("framed OBU must decode");
+                assert_eq!(got, header, "header round-trip");
+                assert_eq!(pe - ps, payload.len(), "payload size");
+                assert_eq!(&out[ps..pe], payload, "payload bytes");
+                assert_eq!(next, end, "next_offset matches end");
+            }
+            Err(_) => {
+                assert!(out.is_empty(), "rejected write_obu must not append");
+            }
+        }
     }
 }
 

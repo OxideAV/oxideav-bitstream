@@ -64,7 +64,7 @@ src/
 ├── vp8.rs           # VP8 keyframe header + IVF demuxer
 ├── vp9.rs           # VP9 uncompressed header
 ├── ivf.rs           # IVF frame demuxer (VP8 / VP9 / AV1 fixtures)
-└── av1.rs           # AV1 leb128 + OBU walker + key-frame headers
+└── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame headers
 ```
 
 There is **no** cross-codec abstraction in v0. Each codec sub-module

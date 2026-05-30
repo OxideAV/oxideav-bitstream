@@ -197,6 +197,109 @@ pub fn write_leb128(out: &mut Vec<u8>, value: u64) -> Result<usize, BitstreamErr
     }
 }
 
+/// 5.3.2 caps `obu_type` at 4 bits.
+pub const OBU_TYPE_MAX: u8 = 0xf;
+/// 5.3.3 caps `temporal_id` at 3 bits.
+pub const OBU_TEMPORAL_ID_MAX: u8 = 0x7;
+/// 5.3.3 caps `spatial_id` at 2 bits.
+pub const OBU_SPATIAL_ID_MAX: u8 = 0x3;
+
+/// 5.3.1 OBU emitter — the inverse of [`read_obu`].
+///
+/// Appends `obu_header [obu_extension_header] obu_size payload` to `out`,
+/// returning `(start, end)` where the slice `&out[start..end]` is the
+/// fully-framed OBU. Round-trip contract: feeding `start` back through
+/// [`read_obu`] reproduces the same [`ObuHeader`], a payload range of
+/// `(payload_start, payload_end)` covering exactly `payload.len()`
+/// bytes, and `next_offset == end`.
+///
+/// Requirements (per the reader's contract and AV1 §5.3.1 LOBF):
+///
+/// * `header.has_size_field` must be `true`. The Low-Overhead-Bitstream
+///   Format mandates `obu_has_size_field=1` for every OBU; [`read_obu`]
+///   refuses anything else, so the writer mirrors that.
+/// * `header.obu_type` must be ≤ [`OBU_TYPE_MAX`] (4 bits).
+/// * `header.temporal_id` must be ≤ [`OBU_TEMPORAL_ID_MAX`] (3 bits) and
+///   `header.spatial_id` ≤ [`OBU_SPATIAL_ID_MAX`] (2 bits). These checks
+///   apply unconditionally — the reader zero-fills both fields when
+///   `extension_flag` is clear, so out-of-range values silently lose
+///   information without this guard.
+/// * `payload.len()` must be ≤ [`LEB128_MAX`] so the size field fits in
+///   the spec's eight-byte cap.
+///
+/// On any validation failure, `out` is left untouched (no partial OBU
+/// header is appended) and the call returns [`BitstreamError::InvalidData`].
+/// The forbidden bit and the trailing reserved bits in both header bytes
+/// are always emitted as zero, matching §5.3.2 / §5.3.3.
+pub fn write_obu(
+    out: &mut Vec<u8>,
+    header: ObuHeader,
+    payload: &[u8],
+) -> Result<(usize, usize), BitstreamError> {
+    if !header.has_size_field {
+        return Err(BitstreamError::invalid(
+            "write_obu: LOBF requires obu_has_size_field=1",
+        ));
+    }
+    if header.obu_type > OBU_TYPE_MAX {
+        return Err(BitstreamError::invalid(
+            "write_obu: obu_type exceeds 4-bit field",
+        ));
+    }
+    if header.extension_flag {
+        if header.temporal_id > OBU_TEMPORAL_ID_MAX {
+            return Err(BitstreamError::invalid(
+                "write_obu: temporal_id exceeds 3-bit field",
+            ));
+        }
+        if header.spatial_id > OBU_SPATIAL_ID_MAX {
+            return Err(BitstreamError::invalid(
+                "write_obu: spatial_id exceeds 2-bit field",
+            ));
+        }
+    } else if header.temporal_id != 0 || header.spatial_id != 0 {
+        // The reader returns (0, 0) when extension_flag is clear; refuse
+        // non-zero IDs paired with extension_flag=false so the round-trip
+        // is total — the caller would otherwise silently lose the IDs.
+        return Err(BitstreamError::invalid(
+            "write_obu: temporal/spatial_id set with extension_flag=0",
+        ));
+    }
+    if payload.len() as u64 > LEB128_MAX {
+        return Err(BitstreamError::invalid(
+            "write_obu: payload length exceeds AV1 §4.10 56-bit leb128 limit",
+        ));
+    }
+
+    let start = out.len();
+    // OBU header byte: obu_forbidden_bit (1) | obu_type (4) |
+    // obu_extension_flag (1) | obu_has_size_field (1) | obu_reserved_1bit (1).
+    let mut h = (header.obu_type & OBU_TYPE_MAX) << 3;
+    if header.extension_flag {
+        h |= 1 << 2;
+    }
+    // has_size_field is true by precondition above.
+    h |= 1 << 1;
+    out.push(h);
+    if header.extension_flag {
+        // Extension byte: temporal_id (3) | spatial_id (2) |
+        // extension_header_reserved_3bits (3).
+        let e = ((header.temporal_id & OBU_TEMPORAL_ID_MAX) << 5)
+            | ((header.spatial_id & OBU_SPATIAL_ID_MAX) << 3);
+        out.push(e);
+    }
+    // §4.10 leb128 encoding of obu_size. write_leb128 has already been
+    // bounds-checked above so this cannot Err — but if it ever did
+    // (e.g. the cap moved), truncate back to the original buffer length
+    // so the "untouched on rejection" contract still holds.
+    if let Err(e) = write_leb128(out, payload.len() as u64) {
+        out.truncate(start);
+        return Err(e);
+    }
+    out.extend_from_slice(payload);
+    Ok((start, out.len()))
+}
+
 // ─────────────────────────── Sequence header ─────────────────────────────────
 
 /// 6.4.2 `color_config`. Reduced form — we keep only the fields the
@@ -855,5 +958,222 @@ mod tests {
             BitstreamError::InvalidData(_) => {}
             e => panic!("expected InvalidData, got {e:?}"),
         }
+    }
+
+    fn td_header() -> ObuHeader {
+        ObuHeader {
+            obu_type: OBU_TEMPORAL_DELIMITER,
+            extension_flag: false,
+            has_size_field: true,
+            temporal_id: 0,
+            spatial_id: 0,
+        }
+    }
+
+    #[test]
+    fn write_obu_emits_empty_temporal_delimiter_canonically() {
+        // A TD OBU with no extension and zero payload is exactly two
+        // bytes: 0x12 (type=2, has_size=1) and 0x00 (size=0). This
+        // matches the canonical fixture used in `read_obu_decodes_*`.
+        let mut out = Vec::new();
+        let (start, end) = write_obu(&mut out, td_header(), &[]).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(end, 2);
+        assert_eq!(out.as_slice(), &[0x12, 0x00]);
+    }
+
+    #[test]
+    fn write_obu_round_trips_through_read_obu() {
+        // Build a frame-shaped OBU with a payload of varying sizes and
+        // confirm read_obu reproduces every header field plus the
+        // payload range exactly.
+        for &len in &[0usize, 1, 16, 127, 128, 1024] {
+            let payload: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(31)).collect();
+            let header = ObuHeader {
+                obu_type: OBU_FRAME,
+                extension_flag: false,
+                has_size_field: true,
+                temporal_id: 0,
+                spatial_id: 0,
+            };
+            let mut out = Vec::new();
+            let (start, end) = write_obu(&mut out, header, &payload).unwrap();
+            let (got, p_start, p_end, next) = read_obu(&out, start).unwrap();
+            assert_eq!(got, header, "header round-trip for len={len}");
+            assert_eq!(p_end - p_start, len);
+            assert_eq!(&out[p_start..p_end], payload.as_slice());
+            assert_eq!(next, end);
+        }
+    }
+
+    #[test]
+    fn write_obu_extension_byte_round_trips_ids() {
+        // Sweep every legal (temporal_id, spatial_id) pair through
+        // extension_flag=true and confirm the extension byte decodes
+        // back to the same IDs.
+        for t in 0..=OBU_TEMPORAL_ID_MAX {
+            for s in 0..=OBU_SPATIAL_ID_MAX {
+                let header = ObuHeader {
+                    obu_type: OBU_FRAME_HEADER,
+                    extension_flag: true,
+                    has_size_field: true,
+                    temporal_id: t,
+                    spatial_id: s,
+                };
+                let payload = [0xaa, 0xbb, 0xcc];
+                let mut out = Vec::new();
+                let (start, _end) = write_obu(&mut out, header, &payload).unwrap();
+                let (got, p_start, p_end, _next) = read_obu(&out, start).unwrap();
+                assert_eq!(got.temporal_id, t, "t={t} s={s}");
+                assert_eq!(got.spatial_id, s, "t={t} s={s}");
+                assert!(got.extension_flag);
+                assert_eq!(&out[p_start..p_end], &payload);
+            }
+        }
+    }
+
+    #[test]
+    fn write_obu_appends_after_existing_prefix() {
+        // The writer is documented to append: a pre-existing prefix in
+        // `out` must be preserved so callers can concatenate multiple
+        // OBUs into one temporal-unit buffer.
+        let mut out = vec![0xde, 0xad, 0xbe, 0xef];
+        let (start, end) = write_obu(&mut out, td_header(), &[]).unwrap();
+        assert_eq!(start, 4);
+        assert_eq!(end, 6);
+        assert_eq!(&out[0..4], &[0xde, 0xad, 0xbe, 0xef]);
+        let (got, _, _, next) = read_obu(&out, start).unwrap();
+        assert_eq!(got.obu_type, OBU_TEMPORAL_DELIMITER);
+        assert_eq!(next, end);
+    }
+
+    #[test]
+    fn write_obu_rejects_no_size_field() {
+        let mut h = td_header();
+        h.has_size_field = false;
+        let mut out = Vec::new();
+        let err = write_obu(&mut out, h, &[]).unwrap_err();
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+        assert!(out.is_empty(), "rejected write must not append");
+    }
+
+    #[test]
+    fn write_obu_rejects_oversized_obu_type() {
+        let mut h = td_header();
+        h.obu_type = 16; // 4-bit field max is 15
+        let mut out = Vec::new();
+        assert!(matches!(
+            write_obu(&mut out, h, &[]),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_obu_rejects_oversized_ids() {
+        // temporal_id > 7 with extension_flag=true.
+        let mut h = ObuHeader {
+            obu_type: OBU_FRAME,
+            extension_flag: true,
+            has_size_field: true,
+            temporal_id: 8,
+            spatial_id: 0,
+        };
+        let mut out = Vec::new();
+        assert!(matches!(
+            write_obu(&mut out, h, &[]),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(out.is_empty());
+        // spatial_id > 3 with extension_flag=true.
+        h.temporal_id = 0;
+        h.spatial_id = 4;
+        assert!(matches!(
+            write_obu(&mut out, h, &[]),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_obu_rejects_nonzero_ids_without_extension_flag() {
+        // The reader returns (0, 0) for both IDs when extension_flag is
+        // clear; pairing non-zero IDs with extension_flag=false would
+        // silently lose them, so the writer refuses it for round-trip
+        // soundness.
+        let mut h = td_header();
+        h.temporal_id = 1;
+        let mut out = Vec::new();
+        assert!(matches!(
+            write_obu(&mut out, h, &[]),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(out.is_empty());
+
+        let mut h = td_header();
+        h.spatial_id = 1;
+        assert!(matches!(
+            write_obu(&mut out, h, &[]),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn write_obu_accepts_max_legal_ids() {
+        let header = ObuHeader {
+            obu_type: OBU_TYPE_MAX,
+            extension_flag: true,
+            has_size_field: true,
+            temporal_id: OBU_TEMPORAL_ID_MAX,
+            spatial_id: OBU_SPATIAL_ID_MAX,
+        };
+        let mut out = Vec::new();
+        let (start, _) = write_obu(&mut out, header, &[]).unwrap();
+        let (got, _, _, _) = read_obu(&out, start).unwrap();
+        assert_eq!(got, header);
+    }
+
+    #[test]
+    fn write_obu_emits_multi_byte_leb128_size() {
+        // payload.len() = 128 needs a 2-byte leb128 size (0x80, 0x01).
+        // Confirms the writer's size-field encoding is delegated to
+        // write_leb128 correctly.
+        let payload = vec![0u8; 128];
+        let mut out = Vec::new();
+        let (_start, end) = write_obu(&mut out, td_header(), &payload).unwrap();
+        // header byte + 2-byte size + 128-byte payload = 131 bytes.
+        assert_eq!(end, 1 + 2 + 128);
+        assert_eq!(out[0], 0x12);
+        assert_eq!(out[1], 0x80);
+        assert_eq!(out[2], 0x01);
+        assert_eq!(&out[3..], payload.as_slice());
+    }
+
+    #[test]
+    fn write_obu_concatenates_into_obu_stream() {
+        // Build a TD + SequenceHeader-shaped stream by appending two
+        // OBUs to the same buffer, then walk the result with read_obu.
+        let mut out = Vec::new();
+        let (s1, e1) = write_obu(&mut out, td_header(), &[]).unwrap();
+        let seq_header = ObuHeader {
+            obu_type: OBU_SEQUENCE_HEADER,
+            extension_flag: false,
+            has_size_field: true,
+            temporal_id: 0,
+            spatial_id: 0,
+        };
+        let seq_payload = [0x11, 0x22, 0x33, 0x44];
+        let (s2, e2) = write_obu(&mut out, seq_header, &seq_payload).unwrap();
+        assert_eq!(s2, e1, "second OBU starts where the first ended");
+        assert_eq!(e2, out.len());
+
+        let (h1, _, _, n1) = read_obu(&out, s1).unwrap();
+        assert_eq!(h1.obu_type, OBU_TEMPORAL_DELIMITER);
+        assert_eq!(n1, s2);
+        let (h2, ps2, pe2, n2) = read_obu(&out, n1).unwrap();
+        assert_eq!(h2.obu_type, OBU_SEQUENCE_HEADER);
+        assert_eq!(&out[ps2..pe2], &seq_payload);
+        assert_eq!(n2, e2);
     }
 }
