@@ -25,7 +25,7 @@
 //!   the writer/reader inverse-pair contract.
 
 use libfuzzer_sys::fuzz_target;
-use oxideav_bitstream::av1::{parse_obu_stream, read_leb128};
+use oxideav_bitstream::av1::{parse_obu_stream, read_leb128, write_leb128, LEB128_MAX};
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
 
@@ -49,6 +49,12 @@ fuzz_target!(|data: &[u8]| {
 
     // 4. Writer -> reader round-trip on a structured view of the input.
     roundtrip_fields(data);
+
+    // 5. write_leb128 round-trip: pull u64 values out of `data` and assert
+    //    that write_leb128 followed by read_leb128 reproduces them. The
+    //    writer refuses anything above LEB128_MAX, so mask the candidate
+    //    value into the legal envelope.
+    leb128_writer_roundtrip(data);
 });
 
 /// Treat `data` as an opcode tape and a payload simultaneously, running
@@ -143,5 +149,47 @@ fn roundtrip_fields(data: &[u8]) {
             got, expected,
             "writer/reader round-trip mismatch for width {width}"
         );
+    }
+}
+
+/// Carve `data` into 8-byte chunks, decode each as a u64, mask into the
+/// 56-bit leb128 envelope, and assert write_leb128 / read_leb128 form an
+/// exact inverse pair. The writer is the only surface here so we also
+/// confirm it never panics on rejection paths.
+fn leb128_writer_roundtrip(data: &[u8]) {
+    let mut emitted = 0;
+    for chunk in data.chunks_exact(8) {
+        if emitted >= 256 {
+            break;
+        }
+        let raw = u64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]);
+        // Half the time, take the raw value (which may exceed LEB128_MAX
+        // and must be rejected with a clean error). Half the time, mask
+        // into the legal envelope and assert a successful round-trip.
+        if raw & 1 == 0 {
+            let v = raw & LEB128_MAX;
+            let mut out = Vec::new();
+            let n = write_leb128(&mut out, v).expect("masked value is in range");
+            assert_eq!(out.len(), n);
+            let (decoded, consumed) = read_leb128(&out, 0).expect("encoded code decodes");
+            assert_eq!(decoded, v);
+            assert_eq!(consumed, n);
+        } else {
+            let mut out = Vec::new();
+            match write_leb128(&mut out, raw) {
+                Ok(_) => {
+                    // raw was already in range — same contract applies.
+                    let (decoded, _) = read_leb128(&out, 0).expect("encoded code decodes");
+                    assert_eq!(decoded, raw);
+                }
+                Err(_) => {
+                    // Out-of-range values must leave the buffer unchanged.
+                    assert!(out.is_empty(), "rejected write must not append");
+                }
+            }
+        }
+        emitted += 1;
     }
 }

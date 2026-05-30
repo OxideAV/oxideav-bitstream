@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `av1::write_leb128` — the inverse of `av1::read_leb128`. Appends the
+  minimal-length unsigned LEB128 encoding (AV1 §4.10) of a `u64` to a
+  caller-provided `Vec<u8>` and returns the number of bytes written. The
+  AV1 reader is capped at 8 bytes (56 payload bits); the writer exposes
+  that bound as a new public constant `av1::LEB128_MAX` and rejects any
+  value above it with `BitstreamError::InvalidData` rather than silently
+  truncating, so the round-trip contract is total: every value the
+  writer accepts decodes back identically through `read_leb128`. Buffer
+  is left untouched on rejection (a refused write does not append). Five
+  new av1 unit tests cover the 1-byte / 2-byte / 3-byte size classes,
+  the 2^56-1 maximum (eight-byte encoding `[0xff;7] || 0x7f`), the
+  rejection paths at `LEB128_MAX + 1` and `u64::MAX`, append-without-
+  clobber semantics, and a 16-value spot-check across all size-class
+  boundaries plus their immediate neighbours.
+- Three new `roundtrip_props.rs` invariants: `write_leb128` is an exact
+  inverse of `read_leb128` over the canonical size-class edges + 5000
+  random values masked into the 56-bit envelope (also asserting the
+  encoded length matches the canonical `ceil(bits_needed/7)` minimal
+  form, with a one-byte floor for `v == 0`); rejection of out-of-range
+  values leaves the buffer unchanged; appending past an existing prefix
+  preserves the prefix bytes and round-trips through `read_leb128` at
+  the prefix's end offset.
+- The `fuzz/reader.rs` target now hammers `write_leb128` alongside the
+  reader surfaces — pulling 8-byte chunks out of attacker input,
+  optionally masking into `LEB128_MAX`, and asserting either
+  `write_leb128 → read_leb128 == identity` on accepted values or a
+  buffer-preserving clean error on rejected ones.
+
 - H.266 / VVC structural VPS parser (ITU-T H.266 (V4) (01/2026) §7.3.2.3).
   New `parse_vps()` decodes the fixed-prefix fields a HW bridge needs:
   `vps_video_parameter_set_id` u(4), `vps_max_layers_minus1` u(6),

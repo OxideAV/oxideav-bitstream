@@ -19,7 +19,7 @@
 //!   returns a clean error rather than panicking.
 //! * `read_leb128` round-trips against a local LEB128 encoder.
 
-use oxideav_bitstream::av1::read_leb128;
+use oxideav_bitstream::av1::{read_leb128, write_leb128, LEB128_MAX};
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::BitstreamError;
@@ -416,6 +416,81 @@ fn more_rbsp_data_tracks_payload_consumption() {
             );
         }
     }
+}
+
+#[test]
+fn write_leb128_is_exact_inverse_of_read_leb128() {
+    // Invariant: write_leb128(v) emits bytes such that read_leb128
+    // returns (v, n) where n is the same length the writer reported.
+    // Quantify over every size class plus a swath of random values
+    // inside the 56-bit envelope.
+    let edges: [u64; 17] = [
+        0,
+        1,
+        127,
+        128,
+        16_383,
+        16_384,
+        2_097_151,
+        2_097_152,
+        268_435_455,
+        268_435_456,
+        34_359_738_367,
+        34_359_738_368,
+        4_398_046_511_103,
+        4_398_046_511_104,
+        562_949_953_421_311,
+        562_949_953_421_312,
+        LEB128_MAX,
+    ];
+    for &v in &edges {
+        let mut buf = Vec::new();
+        let n = write_leb128(&mut buf, v).unwrap();
+        assert_eq!(buf.len(), n, "writer length matches returned size");
+        let (got, consumed) = read_leb128(&buf, 0).unwrap();
+        assert_eq!(got, v, "round-trip value for {v}");
+        assert_eq!(consumed, n, "round-trip byte count for {v}");
+    }
+
+    let mut rng = Lcg::new(0xfeed_face_dead_beef);
+    for _ in 0..5000 {
+        let v = rng.next_u64() & LEB128_MAX;
+        let mut buf = Vec::new();
+        let n = write_leb128(&mut buf, v).unwrap();
+        let (got, consumed) = read_leb128(&buf, 0).unwrap();
+        assert_eq!(got, v);
+        assert_eq!(consumed, n);
+        // Encoded length must agree with the canonical 7-bits-per-byte
+        // rule: ceil(bits_needed/7), with a one-byte floor for v == 0.
+        let bits_needed = if v == 0 { 1 } else { 64 - v.leading_zeros() };
+        let expected_len = bits_needed.div_ceil(7) as usize;
+        assert_eq!(n, expected_len, "minimal-length encoding for {v}");
+    }
+}
+
+#[test]
+fn write_leb128_rejects_values_outside_56_bit_envelope() {
+    // The reader caps a code at 8 bytes (56 bits of payload). The writer
+    // must refuse anything above LEB128_MAX so the round-trip contract
+    // is never silently violated.
+    let mut buf = Vec::new();
+    assert!(write_leb128(&mut buf, LEB128_MAX + 1).is_err());
+    assert!(write_leb128(&mut buf, u64::MAX).is_err());
+    assert!(buf.is_empty(), "rejected writes must not append");
+}
+
+#[test]
+fn write_leb128_appends_to_existing_buffer() {
+    // The writer must extend an existing buffer in place; downstream
+    // callers prepend an OBU header byte (and optional extension byte)
+    // before serialising the size field.
+    let mut buf = vec![0x12, 0xff, 0xfe]; // arbitrary prefix.
+    let n = write_leb128(&mut buf, 12_345).unwrap();
+    assert_eq!(&buf[0..3], &[0x12, 0xff, 0xfe], "prefix preserved");
+    let (val, consumed) = read_leb128(&buf, 3).unwrap();
+    assert_eq!(val, 12_345);
+    assert_eq!(consumed, n);
+    assert_eq!(buf.len(), 3 + n);
 }
 
 #[test]
