@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.1...v0.0.2) - 2026-05-30
+
+### Other
+
+- write_leb128 — minimal-length encoder, inverse of read_leb128
+- structural VPS parser (7.3.2.3, single-layer)
+- peek_bits + more_rbsp_data + read_rbsp_trailing_bits
+- add BitWriter + round-trip property suite + reader fuzz target; fix ue() shift-overflow panic
+- structural PPS parser (7.3.2.5)
+- structural SPS parser (7.3.2.4) + profile_tier_level (7.3.3)
+- structural Annex-B NAL walker + 2-byte NAL header decoder
+- sequence + entry-point + picture header parser (SMPTE 421M)
+- lift sequence/picture/extension header parser from oxideav-vdpau
+- lift uncompressed-header parser from oxideav-vdpau
+- keyframe header parser + ivf demuxer
+- extend PPS parser past entropy_coding_sync + add SPS num_long_term_ref_pics_sps
+
 ### Added
 
 - `av1::write_leb128` — the inverse of `av1::read_leb128`. Appends the
