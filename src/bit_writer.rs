@@ -125,6 +125,104 @@ impl BitWriter {
         self.write_ue(code_num)
     }
 
+    /// Write a signed `n`-bit two's complement integer — the inverse
+    /// of [`BitReader::i`](crate::bit_reader::BitReader::i). `n` must
+    /// be in `1..=32`; `value` must fit inside the representable range
+    /// `-(2^(n-1)) .. 2^(n-1)`, otherwise `InvalidData` is returned.
+    /// `n == 32` accepts every `i32`.
+    pub fn write_i(&mut self, value: i32, n: u32) -> Result<(), BitstreamError> {
+        if n == 0 || n > 32 {
+            return Err(BitstreamError::invalid(format!(
+                "write_i: n={n} outside 1..=32"
+            )));
+        }
+        if n < 32 {
+            let min = -(1i64 << (n - 1));
+            let max = (1i64 << (n - 1)) - 1;
+            let v = value as i64;
+            if v < min || v > max {
+                return Err(BitstreamError::invalid(format!(
+                    "write_i: value {value} outside representable {n}-bit range"
+                )));
+            }
+        }
+        // Mask to `n` bits — this is the same encoding the reader
+        // interprets as two's complement.
+        let mask = if n == 32 { u32::MAX } else { (1u32 << n) - 1 };
+        let raw = (value as u32) & mask;
+        self.write_bits(raw, n);
+        Ok(())
+    }
+
+    /// Write a signed value as `n` magnitude bits followed by a 1-bit
+    /// sign (`1` = negative) — the inverse of
+    /// [`BitReader::signed_magnitude`](crate::bit_reader::BitReader::signed_magnitude).
+    /// `n` must be in `1..=31`; the magnitude must fit in `n` unsigned
+    /// bits (i.e. `|value| < 2^n`).
+    ///
+    /// `value == 0` always writes sign=0 to keep the round-trip
+    /// canonical (a `-0` symbol decodes back as `0`, so re-encoding it
+    /// here as positive zero closes the loop with no fixed-point drift).
+    pub fn write_signed_magnitude(&mut self, value: i32, n: u32) -> Result<(), BitstreamError> {
+        if n == 0 || n > 31 {
+            return Err(BitstreamError::invalid(format!(
+                "write_signed_magnitude: n={n} outside 1..=31"
+            )));
+        }
+        let max_mag = 1u64 << n;
+        let magnitude = value.unsigned_abs() as u64;
+        if magnitude >= max_mag {
+            return Err(BitstreamError::invalid(format!(
+                "write_signed_magnitude: |{value}| does not fit in {n} bits"
+            )));
+        }
+        self.write_bits(magnitude as u32, n);
+        let sign = if value < 0 { 1 } else { 0 };
+        self.write_bit(sign);
+        Ok(())
+    }
+
+    /// Write a truncated Exp-Golomb code — the inverse of
+    /// [`BitReader::te`](crate::bit_reader::BitReader::te). H.264 §9.1.2.
+    ///
+    /// For `x_max == 1` the value must be 0 or 1 and is emitted as a
+    /// single bit equal to `1 - value`. For `x_max > 1` the writer
+    /// delegates to [`BitWriter::write_ue`] and additionally enforces
+    /// `value <= x_max` (the spec only defines `te(v)` over that range).
+    /// `x_max == 0` has no defined code and is rejected.
+    pub fn write_te(&mut self, value: u32, x_max: u32) -> Result<(), BitstreamError> {
+        if x_max == 0 {
+            return Err(BitstreamError::invalid(
+                "write_te: x_max == 0 has no defined code",
+            ));
+        }
+        if value > x_max {
+            return Err(BitstreamError::invalid(format!(
+                "write_te: value {value} exceeds x_max {x_max}"
+            )));
+        }
+        if x_max == 1 {
+            self.write_bit(1 - value);
+            Ok(())
+        } else {
+            self.write_ue(value)
+        }
+    }
+
+    /// Append a byte slice. The writer must be byte-aligned; otherwise
+    /// returns `InvalidData`. The matching reader is
+    /// [`BitReader::read_bytes`](crate::bit_reader::BitReader::read_bytes).
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), BitstreamError> {
+        if !self.byte_aligned() {
+            return Err(BitstreamError::invalid(
+                "write_bytes: writer is not byte-aligned",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        self.bit_pos += bytes.len() * 8;
+        Ok(())
+    }
+
     /// Pad with zero bits up to the next byte boundary.
     pub fn align_to_byte(&mut self) {
         while !self.byte_aligned() {
@@ -190,5 +288,109 @@ mod tests {
     fn ue_rejects_u32_max() {
         let mut w = BitWriter::new();
         assert!(w.write_ue(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn write_i_roundtrips_full_eight_bit_range() {
+        // Walk every legal i8 value through write_i(_, 8) and verify
+        // BitReader::i(8) returns it.
+        for v in i8::MIN..=i8::MAX {
+            let mut w = BitWriter::new();
+            w.write_i(v as i32, 8).unwrap();
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.i(8).unwrap(), v as i32);
+        }
+    }
+
+    #[test]
+    fn write_i_rejects_out_of_range_values() {
+        let mut w = BitWriter::new();
+        // 4-bit range is [-8, 7]; 8 should be rejected.
+        assert!(w.write_i(8, 4).is_err());
+        assert!(w.write_i(-9, 4).is_err());
+    }
+
+    #[test]
+    fn write_i_accepts_full_i32_range_at_width_32() {
+        for &v in &[i32::MIN, -1, 0, 1, i32::MAX] {
+            let mut w = BitWriter::new();
+            w.write_i(v, 32).unwrap();
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.i(32).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn write_signed_magnitude_roundtrips_positive_and_negative() {
+        for v in [-31i32, -1, 0, 1, 31] {
+            let mut w = BitWriter::new();
+            w.write_signed_magnitude(v, 5).unwrap();
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.signed_magnitude(5).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn write_signed_magnitude_rejects_overflow() {
+        let mut w = BitWriter::new();
+        // 6-bit magnitude → |value| < 64; 64 should be rejected.
+        assert!(w.write_signed_magnitude(64, 6).is_err());
+        assert!(w.write_signed_magnitude(-64, 6).is_err());
+    }
+
+    #[test]
+    fn write_te_x_max_one_inverts_single_bit() {
+        // value=0 → bit 1; value=1 → bit 0.
+        let mut w = BitWriter::new();
+        w.write_te(0, 1).unwrap();
+        w.write_te(1, 1).unwrap();
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.te(1).unwrap(), 0);
+        assert_eq!(r.te(1).unwrap(), 1);
+    }
+
+    #[test]
+    fn write_te_x_max_above_one_matches_ue() {
+        // Same round-trip but x_max > 1: delegates to ue/se path.
+        let mut w = BitWriter::new();
+        for v in 0..=10u32 {
+            w.write_te(v, 100).unwrap();
+        }
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        for v in 0..=10u32 {
+            assert_eq!(r.te(100).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn write_te_rejects_value_above_x_max() {
+        let mut w = BitWriter::new();
+        assert!(w.write_te(11, 10).is_err());
+        assert!(w.write_te(2, 1).is_err());
+    }
+
+    #[test]
+    fn write_bytes_roundtrips_with_read_bytes() {
+        let mut w = BitWriter::new();
+        w.write_bits(0xA5, 8);
+        w.write_bytes(&[0x11, 0x22, 0x33]).unwrap();
+        let bytes = w.finish();
+        assert_eq!(bytes, vec![0xA5, 0x11, 0x22, 0x33]);
+
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.u(8), 0xA5);
+        assert_eq!(r.read_bytes(3).unwrap(), &[0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn write_bytes_rejects_unaligned_writer() {
+        let mut w = BitWriter::new();
+        w.write_bits(0b101, 3);
+        assert!(w.write_bytes(&[0xff]).is_err());
     }
 }

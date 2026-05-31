@@ -229,6 +229,114 @@ impl<'a> BitReader<'a> {
             Ok(-((code / 2) as i32))
         }
     }
+
+    /// `i(n)` — read `n` bits MSB-first and interpret as a two's
+    /// complement signed integer. H.264 §7.2, H.265 §7.2, H.266 §7.2.
+    ///
+    /// `n` must be in `1..=32`. `n == 0` is rejected because two's
+    /// complement requires at least one sign bit; bypass with `u(0)`
+    /// for the no-op read.
+    ///
+    /// Past-the-end bits are zero per [`BitReader::u`]'s contract, so
+    /// over-reads degrade to zero rather than panicking.
+    pub fn i(&mut self, n: u32) -> Result<i32, BitstreamError> {
+        if n == 0 || n > 32 {
+            return Err(BitstreamError::InvalidData(format!(
+                "i(n): n={n} outside 1..=32"
+            )));
+        }
+        let raw = if n == 32 { self.u(32) } else { self.u(n) };
+        if n == 32 {
+            // `raw as i32` is already the two's-complement value.
+            Ok(raw as i32)
+        } else {
+            let sign_mask = 1u32 << (n - 1);
+            if raw & sign_mask != 0 {
+                // Sign-extend by subtracting 2^n.
+                let extended = raw as i64 - (1i64 << n);
+                Ok(extended as i32)
+            } else {
+                Ok(raw as i32)
+            }
+        }
+    }
+
+    /// Read a signed integer encoded as `n` magnitude bits followed by a
+    /// 1-bit sign (`1` = negative). This is the VP9 §6.2.7
+    /// `s(n)`-equivalent layout used in `loop_filter_ref_deltas` and
+    /// friends, and it also appears in JPEG/MJPEG quantisation-table
+    /// extensions and several legacy codec headers.
+    ///
+    /// `n` must be in `1..=31` — the value would otherwise be unable to
+    /// fit in an `i32` without ambiguity (32-bit magnitude + sign bit
+    /// has more than 32 bits of dynamic range).
+    ///
+    /// Layout matches VP9: magnitude bits first (MSB-first), sign bit
+    /// last. A zero magnitude with sign bit set decodes to `0` (a
+    /// negative zero collapses to positive zero); the inverse writer
+    /// always emits sign=0 for `value == 0` to keep the round-trip
+    /// canonical.
+    pub fn signed_magnitude(&mut self, n: u32) -> Result<i32, BitstreamError> {
+        if n == 0 || n > 31 {
+            return Err(BitstreamError::InvalidData(format!(
+                "signed_magnitude(n): n={n} outside 1..=31"
+            )));
+        }
+        let magnitude = self.u(n) as i32;
+        let sign = self.read_bit();
+        if sign == 1 {
+            Ok(-magnitude)
+        } else {
+            Ok(magnitude)
+        }
+    }
+
+    /// `te(v)` — truncated Exp-Golomb (H.264 §9.1.2). When `x_max == 1`
+    /// the code is a single bit interpreted as `1 - bit` (so a `0` bit
+    /// decodes to `1`, a `1` bit decodes to `0`). For `x_max > 1` the
+    /// decoder behaves like [`BitReader::ue`].
+    ///
+    /// `x_max == 0` has no valid `te(v)` code and is rejected; the
+    /// H.264 spec only defines `te(v)` for `x_max >= 1`.
+    pub fn te(&mut self, x_max: u32) -> Result<u32, BitstreamError> {
+        if x_max == 0 {
+            return Err(BitstreamError::InvalidData(
+                "te(v): x_max == 0 has no defined code".into(),
+            ));
+        }
+        if x_max == 1 {
+            Ok(1 - self.read_bit())
+        } else {
+            self.ue()
+        }
+    }
+
+    /// Read `n` aligned bytes into a borrowed slice. The reader must be
+    /// byte-aligned at entry; otherwise an `InvalidData` is returned
+    /// (callers should `align_to_byte()` first or use the bit-level
+    /// `u()` path). Returns `UnexpectedEnd` if fewer than `n` bytes are
+    /// available.
+    ///
+    /// On success the reader's bit position advances by `n * 8`.
+    pub fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], BitstreamError> {
+        if !self.byte_aligned() {
+            return Err(BitstreamError::InvalidData(
+                "read_bytes: reader is not byte-aligned".into(),
+            ));
+        }
+        let start = self.bit_pos / 8;
+        let end = start
+            .checked_add(n)
+            .ok_or_else(|| BitstreamError::InvalidData("read_bytes: byte count overflow".into()))?;
+        if end > self.bytes.len() {
+            return Err(BitstreamError::UnexpectedEnd(format!(
+                "read_bytes: need {n} bytes, only {} available",
+                self.bytes.len() - start
+            )));
+        }
+        self.bit_pos = end * 8;
+        Ok(&self.bytes[start..end])
+    }
 }
 
 #[cfg(test)]
@@ -405,5 +513,146 @@ mod tests {
             Err(BitstreamError::UnexpectedEnd(_)) => {}
             other => panic!("expected UnexpectedEnd, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn i_decodes_two_s_complement_for_every_width() {
+        // For n in 1..=8 verify the full value enumeration matches a
+        // direct interpretation of `u(n)` as a signed n-bit integer.
+        for n in 1u32..=8 {
+            let count = 1u32 << n;
+            let half = 1u32 << (n - 1);
+            for raw in 0..count {
+                let mut bytes = [0u8; 4];
+                // Place raw left-justified into the buffer.
+                let shifted = (raw as u64) << (32 - n);
+                bytes[0] = (shifted >> 24) as u8;
+                bytes[1] = (shifted >> 16) as u8;
+                bytes[2] = (shifted >> 8) as u8;
+                bytes[3] = shifted as u8;
+                let mut r = BitReader::new(&bytes);
+                let got = r.i(n).unwrap();
+                let expected: i32 = if raw < half {
+                    raw as i32
+                } else {
+                    raw as i32 - count as i32
+                };
+                assert_eq!(got, expected, "i({n}) over raw {raw}");
+                assert_eq!(r.bit_pos(), n as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn i_rejects_zero_and_oversize_widths() {
+        let bytes = [0xff; 4];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(r.i(0), Err(BitstreamError::InvalidData(_))));
+        assert!(matches!(r.i(33), Err(BitstreamError::InvalidData(_))));
+    }
+
+    #[test]
+    fn i_reads_full_width_thirty_two() {
+        // 0x8000_0000 → -2^31 (i32::MIN).
+        let bytes = [0x80, 0x00, 0x00, 0x00];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.i(32).unwrap(), i32::MIN);
+        let bytes = [0x7f, 0xff, 0xff, 0xff];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.i(32).unwrap(), i32::MAX);
+    }
+
+    #[test]
+    fn signed_magnitude_decodes_canonical_layout() {
+        // 6 value bits + sign bit. value=5, sign=1 → -5.
+        // Pattern: 000101 | 1 = 0b0001011_0 padded → 0b0001_0110 = 0x16
+        let bytes = [0x16];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.signed_magnitude(6).unwrap(), -5);
+
+        // value=0, sign=0 → 0.
+        let bytes = [0x00];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.signed_magnitude(6).unwrap(), 0);
+
+        // value=0, sign=1 → -0 collapses to 0.
+        let bytes = [0b0000_0010];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.signed_magnitude(6).unwrap(), 0);
+    }
+
+    #[test]
+    fn signed_magnitude_rejects_out_of_range_widths() {
+        let bytes = [0xff; 4];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(
+            r.signed_magnitude(0),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(matches!(
+            r.signed_magnitude(32),
+            Err(BitstreamError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn te_with_x_max_one_inverts_single_bit() {
+        // Bit 0 → te value 1; bit 1 → te value 0.
+        let bytes = [0b0100_0000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.te(1).unwrap(), 1);
+        assert_eq!(r.te(1).unwrap(), 0);
+    }
+
+    #[test]
+    fn te_with_x_max_above_one_matches_ue() {
+        // ue codes 0,1,2 → bytes 0b1010_0110.
+        let bytes = [0b1010_0110];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.te(5).unwrap(), 0);
+        assert_eq!(r.te(5).unwrap(), 1);
+        assert_eq!(r.te(5).unwrap(), 2);
+    }
+
+    #[test]
+    fn te_rejects_x_max_zero() {
+        let bytes = [0xff];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(r.te(0), Err(BitstreamError::InvalidData(_))));
+    }
+
+    #[test]
+    fn read_bytes_returns_aligned_slice() {
+        let bytes = [0x01, 0x02, 0x03, 0x04, 0x05];
+        let mut r = BitReader::new(&bytes);
+        let slice = r.read_bytes(3).unwrap();
+        assert_eq!(slice, &[0x01, 0x02, 0x03]);
+        assert_eq!(r.bit_pos(), 24);
+        let slice = r.read_bytes(2).unwrap();
+        assert_eq!(slice, &[0x04, 0x05]);
+        assert!(r.at_end());
+    }
+
+    #[test]
+    fn read_bytes_rejects_unaligned_reader() {
+        let bytes = [0xff, 0xff];
+        let mut r = BitReader::new(&bytes);
+        r.u(3);
+        assert!(matches!(
+            r.read_bytes(1),
+            Err(BitstreamError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn read_bytes_rejects_short_buffer() {
+        let bytes = [0xaa, 0xbb];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(
+            r.read_bytes(3),
+            Err(BitstreamError::UnexpectedEnd(_))
+        ));
+        // Position must be unchanged on the failure path.
+        assert_eq!(r.bit_pos(), 0);
     }
 }

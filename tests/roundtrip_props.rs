@@ -498,6 +498,209 @@ fn write_leb128_appends_to_existing_buffer() {
 }
 
 #[test]
+fn i_roundtrips_every_width_1_to_32() {
+    // For each width n in 1..=32 pick random i32 values inside the
+    // representable [-(2^(n-1)), 2^(n-1) - 1] range, round-trip them
+    // through write_i / i, and assert the value plus the post-read
+    // bit position both come back unchanged.
+    let mut rng = Lcg::new(0xabcd_1234_5678_9999);
+    for n in 1..=32u32 {
+        for _ in 0..1500 {
+            let raw = rng.next_u32();
+            let v: i32 = if n == 32 {
+                raw as i32
+            } else {
+                // n in 1..=31. Use i64 arithmetic to avoid edge cases at n==31.
+                let modulus = 1i64 << n;
+                let half = 1i64 << (n - 1);
+                let bounded = (raw as i64) % modulus;
+                if bounded < half {
+                    bounded as i32
+                } else {
+                    (bounded - modulus) as i32
+                }
+            };
+            let mut w = BitWriter::new();
+            w.write_i(v, n).unwrap();
+            assert_eq!(w.bit_pos(), n as usize);
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.i(n).unwrap(), v, "i({n}) round-trip of {v}");
+            assert_eq!(r.bit_pos(), n as usize);
+        }
+    }
+}
+
+#[test]
+fn i_rejects_out_of_range_writes_for_every_width() {
+    // For each n in 1..=31 verify the writer refuses the first
+    // out-of-range value on either side (no silent truncation).
+    for n in 1..=31u32 {
+        let min = -(1i64 << (n - 1));
+        let max = (1i64 << (n - 1)) - 1;
+        let mut w = BitWriter::new();
+        assert!(
+            w.write_i((min - 1) as i32, n).is_err(),
+            "n={n} should reject below-min {} ",
+            min - 1
+        );
+        assert!(
+            w.write_i((max + 1) as i32, n).is_err(),
+            "n={n} should reject above-max {}",
+            max + 1
+        );
+    }
+}
+
+#[test]
+fn signed_magnitude_roundtrips_every_width_1_to_31() {
+    // n bits of magnitude + 1 sign bit. For each width sweep random
+    // values inside [-(2^n - 1), 2^n - 1] and round-trip them.
+    let mut rng = Lcg::new(0xdead_d00d_0bad_caf0);
+    for n in 1..=31u32 {
+        for _ in 0..1500 {
+            let modulus = if n == 31 { 1u32 << 31 } else { 1u32 << n };
+            let mag = rng.next_u32() % modulus;
+            let sign_neg = (rng.next_u32() & 1) == 1;
+            // Re-canonicalise zero to positive (writer does the same).
+            let v: i32 = if mag == 0 {
+                0
+            } else if sign_neg {
+                -(mag as i32)
+            } else {
+                mag as i32
+            };
+            let mut w = BitWriter::new();
+            w.write_signed_magnitude(v, n).unwrap();
+            assert_eq!(w.bit_pos(), (n + 1) as usize);
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(
+                r.signed_magnitude(n).unwrap(),
+                v,
+                "signed_magnitude({n}) round-trip of {v}"
+            );
+            assert_eq!(r.bit_pos(), (n + 1) as usize);
+        }
+    }
+}
+
+#[test]
+fn signed_magnitude_negative_zero_normalises_to_positive() {
+    // The reader collapses (magnitude=0, sign=1) to value 0, matching
+    // the writer's canonical (sign=0 for zero) emission. A hand-crafted
+    // -0 input must therefore decode as +0 and re-encode to a different
+    // byte string — confirming the canonicalisation is observable.
+    let bytes = [0b0000_0010]; // 6 zero magnitude bits then sign=1.
+    let mut r = BitReader::new(&bytes);
+    let decoded = r.signed_magnitude(6).unwrap();
+    assert_eq!(decoded, 0);
+    let mut w = BitWriter::new();
+    w.write_signed_magnitude(decoded, 6).unwrap();
+    let re_encoded = w.finish();
+    assert_eq!(re_encoded, vec![0x00], "writer always picks sign=0 for 0");
+}
+
+#[test]
+fn te_roundtrips_for_every_x_max() {
+    // x_max == 1: the only legal values are 0 and 1.
+    let mut w = BitWriter::new();
+    w.write_te(0, 1).unwrap();
+    w.write_te(1, 1).unwrap();
+    w.write_te(0, 1).unwrap();
+    w.write_te(1, 1).unwrap();
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    assert_eq!(r.te(1).unwrap(), 0);
+    assert_eq!(r.te(1).unwrap(), 1);
+    assert_eq!(r.te(1).unwrap(), 0);
+    assert_eq!(r.te(1).unwrap(), 1);
+
+    // x_max >= 2: behaves like ue(v); sweep multiple values.
+    let mut rng = Lcg::new(0x1010_2020_3030_4040);
+    for x_max in [2u32, 3, 7, 15, 100, 1000] {
+        let mut w = BitWriter::new();
+        let mut written = Vec::new();
+        for _ in 0..200 {
+            let v = rng.next_u32() % (x_max + 1);
+            w.write_te(v, x_max).unwrap();
+            written.push(v);
+        }
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        for &v in &written {
+            assert_eq!(
+                r.te(x_max).unwrap(),
+                v,
+                "te round-trip x_max={x_max} value={v}"
+            );
+        }
+    }
+}
+
+#[test]
+fn te_rejects_value_above_x_max() {
+    let mut w = BitWriter::new();
+    assert!(w.write_te(2, 1).is_err());
+    assert!(w.write_te(11, 10).is_err());
+    assert!(w.write_te(0, 0).is_err());
+}
+
+#[test]
+fn read_bytes_roundtrips_aligned_payload() {
+    // Interleave a few bit fields with a byte-aligned payload and make
+    // sure the slice the reader hands back is byte-identical to the
+    // bytes the writer pushed in.
+    let mut rng = Lcg::new(0x5555_6666_7777_8888);
+    for _ in 0..500 {
+        let header = rng.next_u32() & 0xff;
+        let len = (rng.next_u32() % 16) as usize + 1;
+        let payload: Vec<u8> = (0..len).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+
+        let mut w = BitWriter::new();
+        w.write_bits(header, 8);
+        w.write_bytes(&payload).unwrap();
+        let trailer = rng.next_u32() & 0xff;
+        w.write_bits(trailer, 8);
+        let bytes = w.finish();
+
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.u(8), header);
+        let got = r.read_bytes(len).unwrap();
+        assert_eq!(got, payload.as_slice());
+        assert_eq!(r.u(8), trailer);
+        assert!(r.at_end());
+    }
+}
+
+#[test]
+fn read_bytes_rejects_unaligned_position() {
+    let bytes = [0xaa, 0xbb];
+    let mut r = BitReader::new(&bytes);
+    r.u(1);
+    let err = r.read_bytes(1).unwrap_err();
+    matches_invalid_data(&err);
+    // Reader cursor is unchanged after the error.
+    assert_eq!(r.bit_pos(), 1);
+}
+
+#[test]
+fn read_bytes_rejects_overlong_request() {
+    let bytes = [0xaa];
+    let mut r = BitReader::new(&bytes);
+    let err = r.read_bytes(2).unwrap_err();
+    matches!(err, BitstreamError::UnexpectedEnd(_));
+    assert_eq!(r.bit_pos(), 0);
+}
+
+fn matches_invalid_data(err: &BitstreamError) {
+    assert!(
+        matches!(err, BitstreamError::InvalidData(_)),
+        "expected InvalidData, got {err:?}"
+    );
+}
+
+#[test]
 fn write_obu_round_trips_against_read_obu_over_random_payloads() {
     // Invariant: for every (header, payload) the writer accepts, read_obu
     // recovers the same header, the payload byte range matches, and the

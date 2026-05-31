@@ -53,9 +53,12 @@ what's parsed today versus deferred.
 ```
 src/
 ├── lib.rs           # re-exports each codec module + BitstreamError
-├── bit_reader.rs    # shared u(n) / ue(v) / se(v) reader, peek_bits,
-│                    # more_rbsp_data, read_rbsp_trailing_bits
+├── bit_reader.rs    # shared u(n) / u64(n) / ue(v) / se(v) / i(n) /
+│                    # te(v) / signed_magnitude(n) / read_bytes reader,
+│                    # peek_bits, more_rbsp_data, read_rbsp_trailing_bits
 ├── bit_writer.rs    # MSB-first writer — inverse of bit_reader
+│                    # (write_bits / write_ue / write_se / write_i /
+│                    # write_te / write_signed_magnitude / write_bytes)
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
 ├── h266.rs          # H.266 Annex-B walker + NAL header + structural SPS + PPS
@@ -66,6 +69,23 @@ src/
 ├── ivf.rs           # IVF frame demuxer (VP8 / VP9 / AV1 fixtures)
 └── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame headers
 ```
+
+## Bit-IO descriptors
+
+The shared `BitReader` / `BitWriter` cover every syntax descriptor the
+VCL specs use. Each pair is an exact round-trip inverse:
+
+| Descriptor          | Reader                          | Writer                            | Spec                           |
+| ------------------- | ------------------------------- | --------------------------------- | ------------------------------ |
+| `u(n)`              | `u(n)` / `u64(n)`               | `write_bits` / `write_bits_u64`   | H.264 §7.2                     |
+| `i(n)` 2's-complement signed | `i(n)`                  | `write_i`                         | H.264 §7.2 / H.265 §7.2        |
+| `ue(v)` unsigned Exp-Golomb | `ue`                     | `write_ue`                        | H.264 §9.1                     |
+| `se(v)` signed Exp-Golomb | `se`                       | `write_se`                        | H.264 §9.1.1                   |
+| `te(v)` truncated Exp-Golomb | `te(x_max)`             | `write_te(value, x_max)`          | H.264 §9.1.2                   |
+| Signed magnitude (`n` bits + 1 sign) | `signed_magnitude(n)` | `write_signed_magnitude` | VP9 §6.2.7 + legacy headers    |
+| Aligned byte slice  | `read_bytes(n)`                 | `write_bytes(&[u8])`              | (helper)                       |
+| LEB128 (AV1)        | `av1::read_leb128`              | `av1::write_leb128`               | AV1 §4.10                      |
+| Annex-B / OBU framing | per-module                   | per-module                        | per-codec                      |
 
 There is **no** cross-codec abstraction in v0. Each codec sub-module
 exposes its own `parse_*` entry points and result structs, and a

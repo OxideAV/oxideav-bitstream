@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BitReader::i(n)` — read `n` MSB-first bits and interpret as a two's
+  complement signed integer (H.264 §7.2 / H.265 §7.2 / H.266 §7.2
+  `i(n)` descriptor). Accepts widths in `1..=32`; the full-width case
+  (`n == 32`) round-trips the entire `i32` range including `i32::MIN`
+  and `i32::MAX`. Past-the-end bits remain zero per the reader's
+  documented over-read contract.
+- `BitWriter::write_i(value, n)` — exact inverse of the new reader.
+  Refuses any value outside the representable
+  `-(2^(n-1)) .. 2^(n-1) - 1` range (no silent truncation), so the
+  round-trip contract is total for accepted inputs.
+- `BitReader::signed_magnitude(n)` / `BitWriter::write_signed_magnitude`
+  — read/write a signed value as `n` magnitude bits followed by a 1-bit
+  sign (`1` = negative), the layout used by VP9's
+  `loop_filter_ref_deltas` and a number of legacy headers. Widths in
+  `1..=31`; canonical encoding of zero is sign=0, so a hand-crafted
+  "negative zero" input decodes back to positive zero (the writer
+  picks the canonical form on re-emission).
+- `BitReader::te(x_max)` / `BitWriter::write_te(value, x_max)` —
+  H.264 §9.1.2 truncated Exp-Golomb. When `x_max == 1` the code
+  collapses to a single bit equal to `1 - value`; for larger `x_max`
+  the helpers delegate to `ue` / `write_ue`. `x_max == 0` is rejected
+  (no spec-defined code) and the writer additionally enforces
+  `value <= x_max`.
+- `BitReader::read_bytes(n)` / `BitWriter::write_bytes(bytes)` —
+  byte-aligned slice helpers. Both reject unaligned positions with
+  `InvalidData` and the reader returns `UnexpectedEnd` on a short
+  buffer without advancing the cursor, so failures are recoverable.
+- Five new property-style invariants in `roundtrip_props.rs` exercising
+  every new helper: `i(n)` round-trip for every width 1..=32 (1500
+  random values per width), the out-of-range rejection sweep for every
+  width 1..=31, `signed_magnitude` round-trip for every width 1..=31
+  (1500 random values per width) plus the negative-zero canonicalisation
+  invariant, `te(v)` round-trip across a handful of representative
+  `x_max` values, and the `read_bytes` / `write_bytes` round-trip with
+  interleaved bit fields. Plus a dozen new unit tests in the
+  `bit_reader` / `bit_writer` modules covering the boundary cases
+  (full 8-bit enumeration of `i(n)` decoding, rejection paths, etc.).
+
 - `av1::write_obu` — the inverse of `av1::read_obu`. Builds a
   fully-framed OBU (`obu_header [obu_extension_header] obu_size payload`)
   from an `ObuHeader` + payload byte slice and appends it to a
