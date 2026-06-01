@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.2...v0.0.3) - 2026-06-01
+
+### Other
+
+- new `parsers` target — per-codec parser panic-hardening coverage
+- i(n), te(v), signed_magnitude, read_bytes + write inverses
+
 ### Added
 
 - New cargo-fuzz target `parsers` — panic-hardening fuzz coverage for
