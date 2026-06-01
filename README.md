@@ -99,6 +99,24 @@ plus a slice (or set of slices) of bytes the HW decoder consumes.
 This crate contains zero `unsafe` blocks. Bit reading is software,
 no FFI involved.
 
+## Fuzz coverage
+
+Two `cargo-fuzz` targets, both wired to the `libfuzzer-sys` harness:
+
+- `reader` — drives the foundational `BitReader` / `BitWriter`
+  primitives, `av1::read_leb128` / `write_leb128`, and
+  `av1::read_obu` / `write_obu` / `parse_obu_stream` through opcode
+  tapes derived from the input. Asserts the writer→reader inverse
+  contract on structured field carvings.
+- `parsers` — drives every per-codec parser entry point
+  (`h264::*`, `hevc::*`, `h266::*`, `mpeg2::*`, `vc1::*`, `vp8::*`,
+  `vp9::*`, `av1::parse_sequence_header` /
+  `av1::parse_frame_header`, `ivf::*`). Every Annex-B / start-code
+  walker, every SPS / PPS / VPS / sequence-header parser, every
+  end-to-end IDR / keyframe walker is fed raw attacker bytes. None
+  may panic, overflow, or index out of bounds — failures must surface
+  as `BitstreamError::UnexpectedEnd` / `InvalidData` / `Unsupported`.
+
 ## Workspace clean-room policy
 
 The bitstream-syntax tables in this crate are written from the

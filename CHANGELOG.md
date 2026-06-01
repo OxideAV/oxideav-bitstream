@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New cargo-fuzz target `parsers` — panic-hardening fuzz coverage for
+  every per-codec parser entry point in the public API. Each iteration
+  feeds the input bytes to every Annex-B / start-code walker
+  (`h264::split_annex_b`, `hevc::split_annex_b`, `h266::split_annex_b`,
+  `mpeg2::find_start_codes`, `vc1::split_bdus`, `ivf::parse_frame`),
+  every header parser (`parse_sps_nal` / `parse_pps_nal` /
+  `parse_vps_nal` for H.264 / HEVC / H.266; `parse_sequence_header` /
+  `parse_picture_header` / `parse_picture_coding_extension` /
+  `parse_sequence_extension` for MPEG-2; `parse_sequence_header_advanced`
+  / `parse_entry_point_header` / `parse_picture_header` for VC-1;
+  `parse_frame_header` / `parse_keyframe` for VP8;
+  `parse_uncompressed_header` for VP9; `parse_sequence_header` /
+  `parse_frame_header` / `parse_obu_stream` for AV1; `parse_header` /
+  `parse_frame` / `parse_all` for IVF) and every end-to-end stream
+  walker (`parse_idr_only`, `parse_first_picture`). The existing
+  `reader` target already exercised the foundational `BitReader` /
+  `BitWriter` / `read_leb128` / `read_obu` surface; this target widens
+  the panic-free contract to the composed parser layer. No parser may
+  panic, overflow, or index out of bounds on any input — short reads
+  must return `BitstreamError::UnexpectedEnd`, malformed bytes must
+  return `BitstreamError::InvalidData`, and unsupported features must
+  return `BitstreamError::Unsupported`.
+
 - `BitReader::i(n)` — read `n` MSB-first bits and interpret as a two's
   complement signed integer (H.264 §7.2 / H.265 §7.2 / H.266 §7.2
   `i(n)` descriptor). Accepts widths in `1..=32`; the full-width case

@@ -15,6 +15,12 @@ cargo-fuzz = true
 # index out of bounds. It also checks the `BitWriter` -> `BitReader`
 # round-trip on structured inputs so the inverse-pair invariant is
 # fuzzed, not just unit-tested.
+#
+# Two targets:
+#   * `reader`  — foundational `BitReader` / `BitWriter` / leb128 / OBU.
+#   * `parsers` — per-codec parser entry points
+#                 (H.264 / HEVC / H.266 / MPEG-2 / VC-1 / VP8 / VP9 /
+#                  AV1 / IVF), each fed raw attacker bytes.
 
 [dependencies]
 libfuzzer-sys = "0.4"
@@ -36,5 +42,11 @@ debug = 1
 [[bin]]
 name = "reader"
 path = "fuzz_targets/reader.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parsers"
+path = "fuzz_targets/parsers.rs"
 test = false
 doc = false
