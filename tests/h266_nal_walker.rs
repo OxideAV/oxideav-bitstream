@@ -13,8 +13,9 @@
 //! filler byte so `split_annex_b` actually has a body to slice.
 
 use oxideav_bitstream::h266::{
-    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_pps, parse_sps, parse_vps,
-    split_annex_b, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_picture_header, parse_pps,
+    parse_sps, parse_vps, split_annex_b, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS,
+    NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
 /// Build a 2-byte VVC NAL header for `(nal_unit_type, nuh_layer_id,
@@ -182,6 +183,55 @@ fn walks_au_and_parses_vps_structural_fields() {
     assert_eq!(vps.vps_max_layers_minus1, 0);
     assert_eq!(vps.vps_max_sublayers_minus1, 0);
     assert_eq!(vps.vps_layer_id, vec![0]);
+}
+
+#[test]
+fn walks_au_and_parses_picture_header_structural_prefix() {
+    // VPS + SPS + PPS + PH + IDR_W_RADL where the PH body carries the
+    // structural prefix (gdr_or_irap=1, non_ref=0, gdr_pic=0 — i.e.
+    // an IRAP picture — inter_allowed=1, intra_allowed=1, pps_id=0).
+    // Demonstrates that a HW bridge can run split_annex_b ->
+    // parse_nal_header -> parse_picture_header to classify the picture
+    // for random-access entry-point detection.
+    //
+    // PH structural-prefix RBSP bit layout (MSB-first):
+    //   gdr_or_irap = 1   (1b)
+    //   non_ref     = 0   (1b)
+    //   gdr_pic     = 0   (1b, present because gdr_or_irap=1)
+    //   inter       = 1   (1b)
+    //   intra       = 1   (1b, present because inter=1)
+    //   ue(0)       = 1   (1b)
+    // 6 bits packed: 1 0 0 1 1 1 = 0b100111_xx → 0x9c.
+    let ph_rbsp: [u8; 1] = [0x9c];
+    let mut ph_nal = Vec::new();
+    ph_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_PH, 0, 1));
+    ph_nal.extend_from_slice(&ph_rbsp);
+
+    let mut stream = Vec::new();
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_VPS, 0, 1), 0xa1);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_SPS, 0, 1), 0xa2);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_PPS, 0, 1), 0xa3);
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&ph_nal);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0xa5);
+
+    let nals = split_annex_b(&stream);
+    assert_eq!(nals.len(), 5);
+
+    let ph_body = nals
+        .iter()
+        .find(|n| parse_nal_header(n).map(|h| h.nal_unit_type) == Ok(NAL_TYPE_PH))
+        .expect("PH NAL present");
+
+    let ph = parse_picture_header(ph_body).expect("PH parses");
+    assert_eq!(ph.ph_gdr_or_irap_pic_flag, 1);
+    assert_eq!(ph.ph_non_ref_pic_flag, 0);
+    assert_eq!(ph.ph_gdr_pic_flag, Some(0));
+    assert_eq!(ph.ph_inter_slice_allowed_flag, 1);
+    assert_eq!(ph.ph_intra_slice_allowed_flag, Some(1));
+    assert_eq!(ph.ph_pic_parameter_set_id, 0);
+    assert!(ph.is_irap());
+    assert!(!ph.is_gdr());
 }
 
 #[test]

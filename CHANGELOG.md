@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- H.266 / VVC picture-header structural-prefix parser (ITU-T H.266
+  §7.3.2.7 / §7.3.2.8). New `parse_picture_header()` decodes a PH NAL
+  body (`NAL_TYPE_PH`) through `ph_pic_parameter_set_id` — the always-
+  present prefix a HW bridge needs to classify the picture for
+  random-access entry-point selection:
+  `ph_gdr_or_irap_pic_flag` u(1), `ph_non_ref_pic_flag` u(1),
+  optional `ph_gdr_pic_flag` u(1), `ph_inter_slice_allowed_flag` u(1),
+  optional `ph_intra_slice_allowed_flag` u(1) and
+  `ph_pic_parameter_set_id` ue(v). Parsing stops there because the next
+  field (`ph_pic_order_cnt_lsb`) is `u(v)` with a width derived from
+  the active SPS (`sps_log2_max_pic_order_cnt_lsb_minus4 + 4` per
+  §7.4.3.4 / §7.4.3.8) which a context-free parser cannot resolve
+  yet — routing that SPS context through the parser is deferred to a
+  later round. `ph_pic_parameter_set_id > 63` (above the
+  `pps_pic_parameter_set_id` u(6) envelope from §7.4.3.5) returns
+  `BitstreamError::InvalidData`. The result struct (`VvcPictureHeader`)
+  exposes `is_irap()`, `is_gdr()` and `intra_slice_allowed()`
+  convenience accessors that resolve the §7.4.3.8 inference rules
+  (`ph_intra_slice_allowed_flag` is inferred to 1 when not signalled).
+  A new public constant `PH_PIC_PARAMETER_SET_ID_MAX = 63` documents
+  the validated envelope.
+- Nine new h266 unit tests cover (a) an IRAP picture
+  (`gdr_or_irap = 1`, `gdr_pic = 0`), (b) a GDR non-reference picture
+  (`gdr_or_irap = 1`, `gdr_pic = 1`, `non_ref = 1`), (c) a non-IRAP
+  inter-only picture (no `ph_gdr_pic_flag`, `intra = 0`), (d) a
+  picture with `inter_allowed = 0` exercising the inferred-intra path,
+  (e) wrong-NAL-type rejection, (f) truncated input, (g)
+  oversized-`ph_pic_parameter_set_id` rejection, (h) emulation-
+  prevention-byte stripping via `ebsp_to_rbsp` and (i) the 2x2x{1,2}x2x
+  {1,2} Cartesian product of every legal signalled/inferred flag
+  combination. Plus one new `tests/h266_nal_walker.rs` integration
+  test walking a synthetic VPS + SPS + PPS + PH + IDR_W_RADL Annex-B
+  access unit through `split_annex_b` → `parse_nal_header` →
+  `parse_picture_header`.
+- Two new `tests/roundtrip_props.rs` invariants: a 1152-path exhaustive
+  sweep that crosses every signalled/inferred flag combination with
+  every legal `ph_pic_parameter_set_id` (0..=63), and a boundary-
+  rejection sweep across the 16 values immediately above the spec
+  maximum.
+
 - `BitReader::i(n)` — read `n` MSB-first bits and interpret as a two's
   complement signed integer (H.264 §7.2 / H.265 §7.2 / H.266 §7.2
   `i(n)` descriptor). Accepts widths in `1..=32`; the full-width case

@@ -852,6 +852,159 @@ pub fn parse_pps(nal_body: &[u8]) -> Result<VvcPps, BitstreamError> {
     })
 }
 
+// ─────────────────────────── Picture header ──────────────────────────────────
+
+/// H.266 / VVC picture-header structural prefix (7.3.2.7 / 7.3.2.8).
+///
+/// In VVC the `picture_header_structure()` is carried by its own NAL
+/// unit (`NAL_TYPE_PH`) and applies to every VCL slice of the access
+/// unit that follows it. A HW bridge has to classify the picture
+/// (IRAP / GDR / inter-allowed / intra-allowed / non-reference) and
+/// recover the active PPS id before submitting the per-slice parameter
+/// buffer to the GPU.
+///
+/// This struct surfaces the **fixed prefix** of the picture-header
+/// structure — the fields that are always present without depending on
+/// the active SPS / PPS. Parsing stops immediately after
+/// `ph_pic_parameter_set_id`, because the very next field
+/// (`ph_pic_order_cnt_lsb`) is `u(v)` with a width of
+/// `sps_log2_max_pic_order_cnt_lsb_minus4 + 4` derived from the SPS the
+/// PPS chains to (7.4.3.4 / 7.4.3.8) — and routing that context-sensitive
+/// width through the parser is deferred to a later round. Everything
+/// gated on `sps_*` / `pps_*` flags (ALF, LMCS, virtual boundaries, RPL,
+/// partition constraints, deblocking offsets, QP delta, …) is therefore
+/// out of scope for this round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VvcPictureHeader {
+    /// `ph_gdr_or_irap_pic_flag` u(1) (7.4.3.8). When 1 the picture is
+    /// either a GDR picture (`ph_gdr_pic_flag = 1`) or an IRAP picture
+    /// (`ph_gdr_pic_flag = 0`); HW bridges use this for random-access
+    /// entry-point selection.
+    pub ph_gdr_or_irap_pic_flag: u8,
+    /// `ph_non_ref_pic_flag` u(1) (7.4.3.8). When 1 the picture is not
+    /// used as a reference picture; bridges may forward this to the
+    /// DPB-management API for early eviction.
+    pub ph_non_ref_pic_flag: u8,
+    /// `ph_gdr_pic_flag` u(1) (7.4.3.8). Present when
+    /// `ph_gdr_or_irap_pic_flag = 1`, `None` otherwise. Distinguishes a
+    /// GDR picture from an IRAP picture inside the
+    /// `ph_gdr_or_irap_pic_flag` set.
+    pub ph_gdr_pic_flag: Option<u8>,
+    /// `ph_inter_slice_allowed_flag` u(1) (7.4.3.8). When 1 the picture
+    /// may contain at least one P or B slice; when 0 every slice is an
+    /// I-slice (and `ph_intra_slice_allowed_flag` is inferred as 1).
+    pub ph_inter_slice_allowed_flag: u8,
+    /// `ph_intra_slice_allowed_flag` u(1) (7.4.3.8). Present when
+    /// `ph_inter_slice_allowed_flag = 1`, `None` otherwise. When 0 the
+    /// picture has only inter slices.
+    pub ph_intra_slice_allowed_flag: Option<u8>,
+    /// `ph_pic_parameter_set_id` ue(v) (7.4.3.8). Identifies the active
+    /// PPS this picture refers to. Spec range is 0..=63 (matching
+    /// `pps_pic_parameter_set_id` u(6) in 7.4.3.5); values outside that
+    /// range are rejected as [`BitstreamError::InvalidData`].
+    pub ph_pic_parameter_set_id: u8,
+}
+
+impl VvcPictureHeader {
+    /// Convenience: `ph_intra_slice_allowed_flag` resolved to its
+    /// effective value (1 when `ph_inter_slice_allowed_flag = 0`, the
+    /// stored flag otherwise). Per 7.4.3.8 the field is inferred to be
+    /// 1 when not signalled (a picture that disallows inter must allow
+    /// intra; otherwise it would have no slices at all).
+    pub fn intra_slice_allowed(&self) -> u8 {
+        match (
+            self.ph_inter_slice_allowed_flag,
+            self.ph_intra_slice_allowed_flag,
+        ) {
+            (0, _) => 1,
+            (_, Some(v)) => v,
+            // ph_inter_slice_allowed_flag = 1 always pairs with the
+            // explicit `ph_intra_slice_allowed_flag` field per the spec
+            // grammar; defensive fallback only.
+            (_, None) => 1,
+        }
+    }
+
+    /// True when the picture is an IRAP picture (`ph_gdr_or_irap_pic_flag
+    /// = 1` and `ph_gdr_pic_flag = 0`). IRAP pictures are the
+    /// random-access entry points HW bridges hand off to a clean DPB.
+    pub fn is_irap(&self) -> bool {
+        self.ph_gdr_or_irap_pic_flag == 1 && self.ph_gdr_pic_flag == Some(0)
+    }
+
+    /// True when the picture is a GDR picture (`ph_gdr_or_irap_pic_flag
+    /// = 1` and `ph_gdr_pic_flag = 1`).
+    pub fn is_gdr(&self) -> bool {
+        self.ph_gdr_or_irap_pic_flag == 1 && self.ph_gdr_pic_flag == Some(1)
+    }
+}
+
+/// `ph_pic_parameter_set_id` shares the spec-defined range of
+/// `pps_pic_parameter_set_id` u(6) (7.4.3.5): 0..=63. Surfaced as a
+/// constant so callers can validate against the same envelope the
+/// parser enforces.
+pub const PH_PIC_PARAMETER_SET_ID_MAX: u8 = 63;
+
+/// Strip the two-byte NAL header from a PH NAL body, then parse the
+/// `picture_header_structure()` (7.3.2.8) up to and including
+/// `ph_pic_parameter_set_id`.
+///
+/// The input slice MUST point at the start of the NAL body (i.e. after
+/// [`split_annex_b`]). Emulation-prevention bytes are stripped via
+/// [`ebsp_to_rbsp`] before bit-level parsing.
+///
+/// Returns [`BitstreamError::InvalidData`] when the NAL is not
+/// [`NAL_TYPE_PH`] or when `ph_pic_parameter_set_id` exceeds the spec
+/// range (>63). All later picture-header bits are out of scope for
+/// this round — the reader's cursor is left wherever the prefix
+/// finished and no further state is touched.
+pub fn parse_picture_header(nal_body: &[u8]) -> Result<VvcPictureHeader, BitstreamError> {
+    if nal_body.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "H.266 PH NAL needs at least the 2-byte header",
+        ));
+    }
+    let header = parse_nal_header(nal_body)?;
+    if header.nal_unit_type != NAL_TYPE_PH {
+        return Err(BitstreamError::invalid(format!(
+            "expected PH NAL (type {}), got {}",
+            NAL_TYPE_PH, header.nal_unit_type
+        )));
+    }
+    let rbsp = ebsp_to_rbsp(&nal_body[2..]);
+    let mut r = BitReader::new(&rbsp);
+
+    let ph_gdr_or_irap_pic_flag = r.u(1) as u8;
+    let ph_non_ref_pic_flag = r.u(1) as u8;
+    let ph_gdr_pic_flag = if ph_gdr_or_irap_pic_flag != 0 {
+        Some(r.u(1) as u8)
+    } else {
+        None
+    };
+    let ph_inter_slice_allowed_flag = r.u(1) as u8;
+    let ph_intra_slice_allowed_flag = if ph_inter_slice_allowed_flag != 0 {
+        Some(r.u(1) as u8)
+    } else {
+        None
+    };
+    let ph_pic_parameter_set_id_u32 = r.ue()?;
+    if ph_pic_parameter_set_id_u32 > PH_PIC_PARAMETER_SET_ID_MAX as u32 {
+        return Err(BitstreamError::invalid(format!(
+            "ph_pic_parameter_set_id = {ph_pic_parameter_set_id_u32} > {PH_PIC_PARAMETER_SET_ID_MAX} (spec range 0..=63)"
+        )));
+    }
+    let ph_pic_parameter_set_id = ph_pic_parameter_set_id_u32 as u8;
+
+    Ok(VvcPictureHeader {
+        ph_gdr_or_irap_pic_flag,
+        ph_non_ref_pic_flag,
+        ph_gdr_pic_flag,
+        ph_inter_slice_allowed_flag,
+        ph_intra_slice_allowed_flag,
+        ph_pic_parameter_set_id,
+    })
+}
+
 // ─────────────────────────── Tests ───────────────────────────────────────────
 
 #[cfg(test)]
@@ -1389,5 +1542,229 @@ mod tests {
         assert_eq!(vps.vps_video_parameter_set_id, 2);
         assert_eq!(vps.vps_max_sublayers_minus1, 5);
         assert_eq!(vps.vps_layer_id, vec![7]);
+    }
+
+    // ── picture-header structural-prefix tests ──────────────────────────────
+
+    /// Build an Annex-B-style PH NAL: 2-byte `nal_unit_header()` (PH,
+    /// layer 0, temporal_id 0) followed by `rbsp`.
+    fn build_ph_nal(rbsp: &[u8]) -> Vec<u8> {
+        let hdr_b0: u8 = 0; // forbidden=0, reserved=0, layer_id=0
+        let hdr_b1: u8 = (NAL_TYPE_PH << 3) | 1; // tid_plus1 = 1
+        let mut out = Vec::with_capacity(2 + rbsp.len());
+        out.push(hdr_b0);
+        out.push(hdr_b1);
+        out.extend_from_slice(rbsp);
+        out
+    }
+
+    /// Build a PH structural-prefix RBSP via `BitWriter` matching the
+    /// `(gdr_or_irap, non_ref, gdr_pic, inter_allowed, intra_allowed,
+    /// pps_id)` tuple. `gdr_pic` is honoured iff `gdr_or_irap = 1`;
+    /// `intra_allowed` is honoured iff `inter_allowed = 1`.
+    fn build_ph_rbsp(
+        gdr_or_irap: u8,
+        non_ref: u8,
+        gdr_pic: u8,
+        inter_allowed: u8,
+        intra_allowed: u8,
+        pps_id: u32,
+    ) -> Vec<u8> {
+        use crate::bit_writer::BitWriter;
+        let mut w = BitWriter::new();
+        w.write_bits(gdr_or_irap as u32, 1);
+        w.write_bits(non_ref as u32, 1);
+        if gdr_or_irap != 0 {
+            w.write_bits(gdr_pic as u32, 1);
+        }
+        w.write_bits(inter_allowed as u32, 1);
+        if inter_allowed != 0 {
+            w.write_bits(intra_allowed as u32, 1);
+        }
+        w.write_ue(pps_id).expect("pps_id within ue range");
+        w.finish()
+    }
+
+    #[test]
+    fn parse_picture_header_irap_inter_allowed_pps0() {
+        // gdr_or_irap=1 (IRAP), non_ref=0, gdr_pic=0 (IRAP not GDR),
+        // inter_allowed=1, intra_allowed=1, ph_pic_parameter_set_id=0.
+        // ue(0) is the single bit '1'.
+        let rbsp = build_ph_rbsp(1, 0, 0, 1, 1, 0);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header(&nal).expect("PH parses");
+        assert_eq!(ph.ph_gdr_or_irap_pic_flag, 1);
+        assert_eq!(ph.ph_non_ref_pic_flag, 0);
+        assert_eq!(ph.ph_gdr_pic_flag, Some(0));
+        assert_eq!(ph.ph_inter_slice_allowed_flag, 1);
+        assert_eq!(ph.ph_intra_slice_allowed_flag, Some(1));
+        assert_eq!(ph.ph_pic_parameter_set_id, 0);
+        assert!(ph.is_irap());
+        assert!(!ph.is_gdr());
+        assert_eq!(ph.intra_slice_allowed(), 1);
+    }
+
+    #[test]
+    fn parse_picture_header_gdr_non_ref_pps5() {
+        // gdr_or_irap=1, non_ref=1, gdr_pic=1 (GDR), inter_allowed=1,
+        // intra_allowed=1, pps_id=5 (ue('00110')).
+        let rbsp = build_ph_rbsp(1, 1, 1, 1, 1, 5);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header(&nal).expect("PH parses");
+        assert_eq!(ph.ph_gdr_or_irap_pic_flag, 1);
+        assert_eq!(ph.ph_non_ref_pic_flag, 1);
+        assert_eq!(ph.ph_gdr_pic_flag, Some(1));
+        assert_eq!(ph.ph_pic_parameter_set_id, 5);
+        assert!(!ph.is_irap());
+        assert!(ph.is_gdr());
+    }
+
+    #[test]
+    fn parse_picture_header_non_irap_no_gdr_field() {
+        // gdr_or_irap=0 → ph_gdr_pic_flag is absent. inter_allowed=1,
+        // intra_allowed=0 (inter-only picture), pps_id=1.
+        let rbsp = build_ph_rbsp(0, 0, /*ignored*/ 0, 1, 0, 1);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header(&nal).expect("PH parses");
+        assert_eq!(ph.ph_gdr_or_irap_pic_flag, 0);
+        assert_eq!(ph.ph_gdr_pic_flag, None);
+        assert_eq!(ph.ph_inter_slice_allowed_flag, 1);
+        assert_eq!(ph.ph_intra_slice_allowed_flag, Some(0));
+        assert_eq!(ph.ph_pic_parameter_set_id, 1);
+        assert!(!ph.is_irap());
+        assert!(!ph.is_gdr());
+        assert_eq!(ph.intra_slice_allowed(), 0);
+    }
+
+    #[test]
+    fn parse_picture_header_inter_disabled_intra_inferred() {
+        // gdr_or_irap=0, non_ref=0, inter_allowed=0
+        // → ph_intra_slice_allowed_flag is absent (intra inferred = 1),
+        // pps_id=63 (the largest legal value).
+        let rbsp = build_ph_rbsp(0, 0, /*ignored*/ 0, 0, /*ignored*/ 0, 63);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header(&nal).expect("PH parses");
+        assert_eq!(ph.ph_inter_slice_allowed_flag, 0);
+        assert_eq!(ph.ph_intra_slice_allowed_flag, None);
+        assert_eq!(ph.ph_pic_parameter_set_id, 63);
+        assert_eq!(ph.intra_slice_allowed(), 1);
+    }
+
+    #[test]
+    fn parse_picture_header_rejects_wrong_nal_type() {
+        // Build an SPS NAL header followed by valid-looking PH bits;
+        // the parser must refuse on NAL-type mismatch.
+        let mut nal = vec![0u8; 4];
+        nal[0] = 0;
+        nal[1] = (NAL_TYPE_SPS << 3) | 1;
+        nal[2] = 0xff;
+        nal[3] = 0xff;
+        let err = parse_picture_header(&nal).expect_err("SPS NAL must be rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn parse_picture_header_rejects_truncated() {
+        let err = parse_picture_header(&[0x00]).expect_err("1-byte input must error");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn parse_picture_header_rejects_oversized_pps_id() {
+        // Build a PH RBSP that encodes ph_pic_parameter_set_id = 64,
+        // one past the spec-allowed maximum. ue(64) = 13 bits of code
+        // word — well within a small RBSP.
+        let rbsp = build_ph_rbsp(0, 0, /*ignored*/ 0, 0, /*ignored*/ 0, 64);
+        let nal = build_ph_nal(&rbsp);
+        let err = parse_picture_header(&nal)
+            .expect_err("oversized ph_pic_parameter_set_id must be rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn parse_picture_header_handles_emulation_prevention_byte() {
+        // Verify the PH parser routes its body through `ebsp_to_rbsp`
+        // by giving it an EBSP that contains a `00 00 03 …` sequence
+        // the spec mandates the encoder inserted. After stripping, the
+        // bit reader sees the canonical RBSP and the parser must
+        // recover the encoded fields identically.
+        //
+        // Canonical RBSP for (gdr_or_irap=0, non_ref=0, inter=0,
+        // pps_id=0) is the single byte 0x10. Pad it with a 0x10 RBSP
+        // tail containing a 0x00 0x00 0x00 run so the encoder would
+        // have inserted an 0x03 emulation byte mid-stream. Pre-strip
+        // RBSP we want the parser to see is `[0x10, 0x00, 0x00, 0x00]`.
+        // EBSP form (with 0x03 inserted after the first 00 00 pair):
+        //   `[0x10, 0x00, 0x00, 0x03, 0x00]` — `ebsp_to_rbsp` strips
+        // the 0x03 back out. The first byte's high four bits drive the
+        // whole prefix so the parse result is identical to the
+        // no-emulation-byte case.
+        let mut ebsp = Vec::new();
+        ebsp.push(0u8); // NAL hdr byte 0
+        ebsp.push((NAL_TYPE_PH << 3) | 1); // NAL hdr byte 1
+        ebsp.extend_from_slice(&[0x10, 0x00, 0x00, 0x03, 0x00]);
+
+        // First sanity-check the stripping itself produces the
+        // expected canonical RBSP.
+        assert_eq!(ebsp_to_rbsp(&ebsp[2..]), vec![0x10, 0x00, 0x00, 0x00]);
+
+        let ph = parse_picture_header(&ebsp).expect("PH parses past emulation byte");
+        assert_eq!(ph.ph_gdr_or_irap_pic_flag, 0);
+        assert_eq!(ph.ph_non_ref_pic_flag, 0);
+        assert_eq!(ph.ph_inter_slice_allowed_flag, 0);
+        assert_eq!(ph.ph_intra_slice_allowed_flag, None);
+        assert_eq!(ph.ph_pic_parameter_set_id, 0);
+    }
+
+    #[test]
+    fn parse_picture_header_full_field_combinations() {
+        // Sweep the 2x2x2 product of (gdr_or_irap, inter_allowed) and
+        // (non_ref) flags. Where a child flag is gated on its parent we
+        // also vary the child. This exercises every signalled/inferred
+        // branch in the parser.
+        for gdr_or_irap in 0u8..=1 {
+            for non_ref in 0u8..=1 {
+                for inter in 0u8..=1 {
+                    let gdr_pics: &[u8] = if gdr_or_irap != 0 { &[0, 1] } else { &[0] };
+                    let intras: &[u8] = if inter != 0 { &[0, 1] } else { &[0] };
+                    for &gdr_pic in gdr_pics {
+                        for &intra in intras {
+                            let rbsp = build_ph_rbsp(
+                                gdr_or_irap,
+                                non_ref,
+                                gdr_pic,
+                                inter,
+                                intra,
+                                7, // mid-range pps_id
+                            );
+                            let nal = build_ph_nal(&rbsp);
+                            let ph = parse_picture_header(&nal).unwrap_or_else(|e| {
+                                panic!(
+                                    "PH should parse for ({gdr_or_irap},{non_ref},{gdr_pic},{inter},{intra}): {e:?}"
+                                )
+                            });
+                            assert_eq!(ph.ph_gdr_or_irap_pic_flag, gdr_or_irap);
+                            assert_eq!(ph.ph_non_ref_pic_flag, non_ref);
+                            assert_eq!(
+                                ph.ph_gdr_pic_flag,
+                                if gdr_or_irap != 0 {
+                                    Some(gdr_pic)
+                                } else {
+                                    None
+                                }
+                            );
+                            assert_eq!(ph.ph_inter_slice_allowed_flag, inter);
+                            assert_eq!(
+                                ph.ph_intra_slice_allowed_flag,
+                                if inter != 0 { Some(intra) } else { None }
+                            );
+                            assert_eq!(ph.ph_pic_parameter_set_id, 7);
+                            // is_irap / is_gdr are mutually exclusive.
+                            assert!(!(ph.is_irap() && ph.is_gdr()));
+                        }
+                    }
+                }
+            }
+        }
     }
 }

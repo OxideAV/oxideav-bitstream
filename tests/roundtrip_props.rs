@@ -26,6 +26,7 @@ use oxideav_bitstream::av1::{
 };
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
+use oxideav_bitstream::h266::{parse_picture_header, NAL_TYPE_PH, PH_PIC_PARAMETER_SET_ID_MAX};
 use oxideav_bitstream::BitstreamError;
 
 /// Deterministic 64-bit linear-congruential generator (Numerical
@@ -865,4 +866,134 @@ fn leb128_truncated_is_clean_error() {
     assert!(read_leb128(&[0x01], 5).is_err());
     // Empty.
     assert!(read_leb128(&[], 0).is_err());
+}
+
+/// Build a 2-byte VVC PH NAL header (layer 0, temporal_id 0) followed
+/// by the supplied RBSP. Mirrors the `build_ph_nal` helper inside
+/// `h266::tests` so the property suite can exercise the parser without
+/// touching test-only internals.
+fn build_ph_nal(rbsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(0u8);
+    out.push((NAL_TYPE_PH << 3) | 1);
+    out.extend_from_slice(rbsp);
+    out
+}
+
+/// Pack the H.266 picture-header structural prefix (7.3.2.8 prefix
+/// through `ph_pic_parameter_set_id`) into an RBSP using the public
+/// `BitWriter`. Returns the canonical RBSP bytes.
+fn build_ph_rbsp(
+    gdr_or_irap: u8,
+    non_ref: u8,
+    gdr_pic: u8,
+    inter_allowed: u8,
+    intra_allowed: u8,
+    pps_id: u32,
+) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.write_bits(gdr_or_irap as u32, 1);
+    w.write_bits(non_ref as u32, 1);
+    if gdr_or_irap != 0 {
+        w.write_bits(gdr_pic as u32, 1);
+    }
+    w.write_bits(inter_allowed as u32, 1);
+    if inter_allowed != 0 {
+        w.write_bits(intra_allowed as u32, 1);
+    }
+    w.write_ue(pps_id).expect("pps_id within ue range");
+    w.finish()
+}
+
+#[test]
+fn h266_picture_header_round_trips_full_flag_grid_and_pps_id_range() {
+    // Exhaustively sweep the 2x2x{1,2}x2x{1,2} flag-combination tree
+    // (28 paths) crossed with every legal `ph_pic_parameter_set_id`
+    // (0..=63). For each combination, build the PH structural-prefix
+    // RBSP with the public `BitWriter`, wrap it as an Annex-B NAL, and
+    // confirm `parse_picture_header` recovers every signalled field.
+    //
+    // This pins down two contracts simultaneously: that the parser
+    // walks the optional `ph_gdr_pic_flag` / `ph_intra_slice_allowed_flag`
+    // gates correctly (an off-by-one bit would shift `ph_pic_parameter_set_id`
+    // by 1 and cascade through the assert), and that every encoded
+    // `pps_id` value in the spec range survives ue(v) round-trip.
+    let mut paths = 0u32;
+    for gdr_or_irap in 0u8..=1 {
+        for non_ref in 0u8..=1 {
+            for inter in 0u8..=1 {
+                let gdr_pics: &[u8] = if gdr_or_irap != 0 { &[0, 1] } else { &[0] };
+                let intras: &[u8] = if inter != 0 { &[0, 1] } else { &[0] };
+                for &gdr_pic in gdr_pics {
+                    for &intra in intras {
+                        for pps_id in 0u32..=PH_PIC_PARAMETER_SET_ID_MAX as u32 {
+                            let rbsp =
+                                build_ph_rbsp(gdr_or_irap, non_ref, gdr_pic, inter, intra, pps_id);
+                            let nal = build_ph_nal(&rbsp);
+                            let ph = parse_picture_header(&nal).unwrap_or_else(|e| {
+                                panic!(
+                                    "PH should parse for ({gdr_or_irap},{non_ref},{gdr_pic},{inter},{intra},pps_id={pps_id}): {e:?}"
+                                )
+                            });
+                            assert_eq!(ph.ph_gdr_or_irap_pic_flag, gdr_or_irap);
+                            assert_eq!(ph.ph_non_ref_pic_flag, non_ref);
+                            assert_eq!(
+                                ph.ph_gdr_pic_flag,
+                                if gdr_or_irap != 0 {
+                                    Some(gdr_pic)
+                                } else {
+                                    None
+                                }
+                            );
+                            assert_eq!(ph.ph_inter_slice_allowed_flag, inter);
+                            assert_eq!(
+                                ph.ph_intra_slice_allowed_flag,
+                                if inter != 0 { Some(intra) } else { None }
+                            );
+                            assert_eq!(ph.ph_pic_parameter_set_id, pps_id as u8);
+                            paths += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Sanity-check the path count: 2 (gdr_or_irap) * 2 (non_ref) *
+    // {1 with gdr_or_irap=0 or 2 with gdr_or_irap=1}{gdr_pic}
+    //   * 2 (inter) * {1 with inter=0 or 2 with inter=1}{intra}
+    //   * 64 (pps_id).
+    // ≡ (1+2) * (1+2) * 2 * 64 = 1152 paths.
+    assert_eq!(
+        paths, 1152,
+        "expected 1152 unique (flag-combo, pps_id) paths"
+    );
+}
+
+#[test]
+fn h266_picture_header_rejects_every_oversized_pps_id() {
+    // Confirm `parse_picture_header` refuses every value of
+    // `ph_pic_parameter_set_id` above the spec maximum (>63). The check
+    // sweeps a window past the boundary so a forgotten `<` vs `<=` would
+    // leak at least one accepted value into the assertion.
+    for pps_id in
+        (PH_PIC_PARAMETER_SET_ID_MAX as u32 + 1)..=(PH_PIC_PARAMETER_SET_ID_MAX as u32 + 16)
+    {
+        let rbsp = build_ph_rbsp(0, 0, /*ignored*/ 0, 0, /*ignored*/ 0, pps_id);
+        let nal = build_ph_nal(&rbsp);
+        let err = parse_picture_header(&nal).unwrap_err_or_else_panic(pps_id);
+        matches_invalid_data(&err);
+    }
+}
+
+trait UnwrapErrOrElsePanic<T> {
+    fn unwrap_err_or_else_panic(self, ctx: u32) -> BitstreamError;
+}
+
+impl<T: core::fmt::Debug> UnwrapErrOrElsePanic<T> for Result<T, BitstreamError> {
+    fn unwrap_err_or_else_panic(self, ctx: u32) -> BitstreamError {
+        match self {
+            Ok(v) => panic!("expected rejection for ctx={ctx}, got Ok({v:?})"),
+            Err(e) => e,
+        }
+    }
 }

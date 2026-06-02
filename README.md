@@ -32,7 +32,7 @@ three HW bridges share, without the SW-codec baggage.
 | Annex-B / OBU framing | yes | yes | yes | yes (leb128 sizes) |
 | NAL header decode | yes | yes | yes | n/a |
 | Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | yes | yes | structural VPS (7.3.2.3, single-layer) + SPS (7.3.2.4 + 7.3.3) | yes |
-| Picture header (PPS / Frame-Header OBU) | yes | yes | structural (7.3.2.5 prefix) | yes |
+| Picture header (PPS / Frame-Header OBU) | yes | yes | structural PPS (7.3.2.5 prefix) + PH structural prefix (7.3.2.7 / 7.3.2.8 through `ph_pic_parameter_set_id`) | yes |
 | Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
 | DCT, entropy decode, motion compensation, in-loop filtering | no | no | no | no |
 | Scaling lists | rejected | rejected | n/a | n/a |
@@ -61,7 +61,8 @@ src/
 │                    # write_te / write_signed_magnitude / write_bytes)
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
-├── h266.rs          # H.266 Annex-B walker + NAL header + structural SPS + PPS
+├── h266.rs          # H.266 Annex-B walker + NAL header + structural VPS / SPS /
+│                    # PPS + picture-header structural prefix (7.3.2.8)
 ├── mpeg2.rs         # MPEG-2 sequence + picture + extension headers
 ├── vc1.rs           # VC-1 sequence + entry-point + picture header
 ├── vp8.rs           # VP8 keyframe header + IVF demuxer
