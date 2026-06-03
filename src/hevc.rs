@@ -73,24 +73,12 @@ pub fn split_annex_b(buf: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// Strip H.265 emulation-prevention `0x03` bytes (7.4.1.1). Same
-/// shape as in H.264.
-pub fn ebsp_to_rbsp(ebsp: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(ebsp.len());
-    let mut i = 0;
-    let n = ebsp.len();
-    while i < n {
-        if i + 2 < n && ebsp[i] == 0 && ebsp[i + 1] == 0 && ebsp[i + 2] == 3 {
-            out.push(0);
-            out.push(0);
-            i += 3;
-        } else {
-            out.push(ebsp[i]);
-            i += 1;
-        }
-    }
-    out
-}
+/// Strip H.265 emulation-prevention `0x03` bytes (7.4.1.1). The
+/// algorithm is identical to the one ITU-T H.264 §7.4.1.1 and ITU-T
+/// H.266 §7.4.2.1 define, so this module re-exports the shared helper
+/// from [`crate::nal::ebsp_to_rbsp`] rather than carrying a private
+/// copy.
+pub use crate::nal::ebsp_to_rbsp;
 
 /// Inspect the two-byte HEVC NAL header. Returns
 /// `(forbidden_zero_bit, nal_unit_type, layer_id, temporal_id_plus1)`.

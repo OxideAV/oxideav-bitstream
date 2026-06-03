@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `nal` module hosting the shared
+  `emulation_prevention_three_byte` (`0x03`) byte-level helpers used by
+  every NAL-framed codec in the crate. `nal::ebsp_to_rbsp` (the
+  stripper) is identical to the byte-identical copies previously
+  carried by `h264`, `hevc` and `h266`; those three modules now
+  re-export the shared definition so a future drift can no longer
+  affect just one codec. `nal::rbsp_to_ebsp` is the inverse — the
+  encoder-side inserter that takes an RBSP built through `BitWriter`
+  and emits a wire-framed EBSP. It escapes every `0x00 0x00 X` triple
+  with `X ∈ {0x00, 0x01, 0x02, 0x03}` per ITU-T H.264 §7.4.1.1 /
+  H.265 §7.4.1.1 / H.266 §7.4.2.1, and appends the trailing escape
+  guard the spec mandates when the RBSP ends on a `0x00 0x00`
+  suffix. Eleven new `nal` unit tests cover canonical triple
+  stripping, every escaped third-byte value (0x00..=0x03), the
+  unescaped third-byte boundary at 0x04, longer interior zero runs
+  whose escapes overlap, the trailing-zero-guard round-trip, the
+  unaffected-bytes pass-through, and the empty-input identity. Three
+  new `roundtrip_props.rs` invariants: a 11-length × 200-iteration
+  random RBSP round-trip through the inverse pair plus 14
+  hand-constructed edge cases (empty, lone `0x00`, three-zero clusters,
+  the all-zeros sequence at lengths 8 and 9, interior triple-zero
+  windows); a "no forbidden window" scan asserting the framed EBSP
+  contains no `0x00 0x00 0x00` or `0x00 0x00 0x01` triple at any
+  offset; and a re-export identity check that the three codec
+  modules' `ebsp_to_rbsp` produce byte-identical output to the shared
+  `nal::ebsp_to_rbsp` on a representative fixture.
+
+### Changed
+
+- `h264::ebsp_to_rbsp`, `hevc::ebsp_to_rbsp` and `h266::ebsp_to_rbsp`
+  are now `pub use` re-exports of `nal::ebsp_to_rbsp`. Behaviour is
+  bit-identical to the previous private copies (which were already
+  byte-equivalent across the three modules); the function signature
+  is unchanged so every existing caller (`tests/h264_idr.rs`,
+  `h264::parse_sps_nal`, `hevc::parse_sps_nal`, the H.266 SPS / PPS /
+  picture-header routes, etc.) continues to type-check without
+  modification. The module-level rustdoc on each codec now points at
+  the shared helper.
+
 - H.266 / VVC SPS parser extended past `sps_bitdepth_minus8` (ITU-T
   H.266 §7.3.2.4). Three new structural fields are surfaced on
   `VvcSps`: `sps_entropy_coding_sync_enabled_flag` u(1) (the WPP

@@ -59,10 +59,15 @@ src/
 ├── bit_writer.rs    # MSB-first writer — inverse of bit_reader
 │                    # (write_bits / write_ue / write_se / write_i /
 │                    # write_te / write_signed_magnitude / write_bytes)
+├── nal.rs           # shared ebsp_to_rbsp + rbsp_to_ebsp (H.264 7.4.1.1 /
+│                    # H.265 7.4.1.1 / H.266 7.3.1.1 +7.4.2.1)
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
+│                    # (re-exports ebsp_to_rbsp from nal)
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
+│                    # (re-exports ebsp_to_rbsp from nal)
 ├── h266.rs          # H.266 Annex-B walker + NAL header + structural VPS / SPS /
 │                    # PPS + picture-header structural prefix (7.3.2.8)
+│                    # (re-exports ebsp_to_rbsp from nal)
 ├── mpeg2.rs         # MPEG-2 sequence + picture + extension headers
 ├── vc1.rs           # VC-1 sequence + entry-point + picture header
 ├── vp8.rs           # VP8 keyframe header + IVF demuxer
@@ -70,6 +75,20 @@ src/
 ├── ivf.rs           # IVF frame demuxer (VP8 / VP9 / AV1 fixtures)
 └── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame headers
 ```
+
+## NAL byte-framing helpers
+
+`nal::ebsp_to_rbsp` strips `emulation_prevention_three_byte` (`0x03`)
+bytes from an encapsulated byte sequence payload to recover the raw
+byte sequence payload before bit-level parsing. `nal::rbsp_to_ebsp` is
+its inverse — for encoders that build an RBSP through `BitWriter` and
+need to frame it for the wire. The rule is identical for H.264, HEVC
+and H.266, so the three codec modules re-export the shared
+implementation rather than carrying private copies.
+
+Round-trip contract: `ebsp_to_rbsp(&rbsp_to_ebsp(x)) == x` for any
+byte slice `x`, including the trailing-zero guard case
+(`x = [.., 0x00, 0x00]` → `[.., 0x00, 0x00, 0x03]` → `[.., 0x00, 0x00]`).
 
 ## Bit-IO descriptors
 
@@ -86,6 +105,7 @@ VCL specs use. Each pair is an exact round-trip inverse:
 | Signed magnitude (`n` bits + 1 sign) | `signed_magnitude(n)` | `write_signed_magnitude` | VP9 §6.2.7 + legacy headers    |
 | Aligned byte slice  | `read_bytes(n)`                 | `write_bytes(&[u8])`              | (helper)                       |
 | LEB128 (AV1)        | `av1::read_leb128`              | `av1::write_leb128`               | AV1 §4.10                      |
+| EBSP ↔ RBSP byte stuffing | `nal::ebsp_to_rbsp`        | `nal::rbsp_to_ebsp`               | H.264 / H.265 §7.4.1.1, H.266 §7.3.1.1 + §7.4.2.1 |
 | Annex-B / OBU framing | per-module                   | per-module                        | per-codec                      |
 
 There is **no** cross-codec abstraction in v0. Each codec sub-module

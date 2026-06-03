@@ -30,6 +30,7 @@ use oxideav_bitstream::h266::{
     parse_picture_header, parse_picture_header_with_sps, VvcSps, NAL_TYPE_PH,
     PH_PIC_PARAMETER_SET_ID_MAX, SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
 };
+use oxideav_bitstream::nal::{ebsp_to_rbsp, rbsp_to_ebsp};
 use oxideav_bitstream::BitstreamError;
 
 /// Deterministic 64-bit linear-congruential generator (Numerical
@@ -1114,4 +1115,111 @@ fn h266_picture_header_with_sps_round_trips_every_poc_width_and_value() {
     }
     // Sanity: 13 widths × 42 values × 2 picture types = 1092 paths.
     assert_eq!(paths, 13 * 42 * 2, "expected 1092 IRAP+GDR PH paths");
+}
+
+// ─── nal::rbsp_to_ebsp ↔ nal::ebsp_to_rbsp invariants ────────────────────────
+
+/// Helper: emit a known-conformant EBSP that round-trips through both
+/// directions cleanly. We construct it from a freely-chosen RBSP via
+/// `rbsp_to_ebsp` so the trailing-zero-guard branch is automatically
+/// handled (the inverse pair is total over the RBSP side; the EBSP side
+/// is only total over conformant inputs).
+fn rng_rbsp(rng: &mut Lcg, len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push((rng.next_u32() & 0xff) as u8);
+    }
+    out
+}
+
+#[test]
+fn nal_rbsp_roundtrips_through_ebsp() {
+    // Random RBSPs of varying lengths must round-trip exactly through
+    // the inverse pair. Includes the empty buffer and the boundary
+    // cases of trailing zeros / leading zeros / triple-zero clusters.
+    let mut rng = Lcg::new(0x1357_9bdf_2468_ace0);
+
+    // Hand-constructed edge cases first.
+    let edge_cases: &[&[u8]] = &[
+        &[],
+        &[0x00],
+        &[0x00, 0x00],
+        &[0x00, 0x00, 0x00],
+        &[0x00, 0x00, 0x01],
+        &[0x00, 0x00, 0x02],
+        &[0x00, 0x00, 0x03],
+        &[0x00, 0x00, 0x04],
+        &[0xff, 0x00, 0x00],
+        &[0xff, 0x00, 0x00, 0x00],
+        &[0xff, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02],
+        // A sequence of all-zero bytes — every interior `00 00 X≤3`
+        // window must get an escape.
+        &[0x00; 8],
+        &[0x00; 9],
+        &[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02],
+    ];
+    for &rbsp in edge_cases {
+        let ebsp = rbsp_to_ebsp(rbsp);
+        let recovered = ebsp_to_rbsp(&ebsp);
+        assert_eq!(recovered, rbsp, "edge round-trip for {rbsp:?} via {ebsp:?}");
+    }
+
+    // Random sweep across a range of lengths. The seed is fixed so a
+    // failure is reproducible.
+    for &len in &[1usize, 2, 3, 4, 8, 16, 32, 64, 128, 256, 1024] {
+        for _ in 0..200 {
+            let rbsp = rng_rbsp(&mut rng, len);
+            let ebsp = rbsp_to_ebsp(&rbsp);
+            let recovered = ebsp_to_rbsp(&ebsp);
+            assert_eq!(
+                recovered, rbsp,
+                "random round-trip failed at len {len}: ebsp={ebsp:x?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn nal_ebsp_never_contains_internal_start_code_prefix() {
+    // After framing, no three-byte window `00 00 X` with X in 0..=1 is
+    // permitted inside the EBSP — that is exactly what the escape rule
+    // guarantees (and a start-code scanner relies on). We assert it on
+    // both edge cases and random RBSPs.
+    let mut rng = Lcg::new(0xc0ff_ee15_b00b_face);
+
+    // Property holds for arbitrary RBSPs because the writer escapes
+    // every `00 00 (00..=03)` triple.
+    for len in [3usize, 4, 8, 32, 128, 1024] {
+        for _ in 0..200 {
+            let rbsp = rng_rbsp(&mut rng, len);
+            let ebsp = rbsp_to_ebsp(&rbsp);
+            // Scan: no two consecutive zeros may be followed by 0x00 or
+            // 0x01 (that would be the start of an Annex-B prefix or
+            // its prefix-of-prefix special case).
+            for i in 0..ebsp.len().saturating_sub(2) {
+                if ebsp[i] == 0 && ebsp[i + 1] == 0 {
+                    let third = ebsp[i + 2];
+                    assert!(
+                        third != 0x00 && third != 0x01,
+                        "EBSP contains forbidden window at {i}: {:x?}",
+                        &ebsp[i..i + 3.min(ebsp.len() - i)]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn nal_codec_module_reexports_share_identity() {
+    // The three codec modules export `ebsp_to_rbsp` as a re-export of
+    // the shared `nal::ebsp_to_rbsp`. Pinning that down here means a
+    // later accidental fork of the per-codec helper (e.g. someone
+    // restoring the private copy) shows up as a behavioural drift on
+    // the same fixture.
+    let ebsp = [0x67, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x03, 0x02];
+    let want = ebsp_to_rbsp(&ebsp);
+    assert_eq!(oxideav_bitstream::h264::ebsp_to_rbsp(&ebsp), want);
+    assert_eq!(oxideav_bitstream::hevc::ebsp_to_rbsp(&ebsp), want);
+    assert_eq!(oxideav_bitstream::h266::ebsp_to_rbsp(&ebsp), want);
 }

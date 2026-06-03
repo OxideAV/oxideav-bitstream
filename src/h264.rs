@@ -78,22 +78,11 @@ pub fn split_annex_b(buf: &[u8]) -> Vec<&[u8]> {
 /// Strip H.264 emulation-prevention `0x03` bytes from an EBSP to
 /// produce an RBSP (7.4.1.1). Inserted by the encoder after `00 00 0x`
 /// to keep start codes unique inside the payload.
-pub fn ebsp_to_rbsp(ebsp: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(ebsp.len());
-    let mut i = 0;
-    let n = ebsp.len();
-    while i < n {
-        if i + 2 < n && ebsp[i] == 0 && ebsp[i + 1] == 0 && ebsp[i + 2] == 3 {
-            out.push(0);
-            out.push(0);
-            i += 3;
-        } else {
-            out.push(ebsp[i]);
-            i += 1;
-        }
-    }
-    out
-}
+///
+/// The implementation lives in [`crate::nal::ebsp_to_rbsp`]; H.264,
+/// HEVC and H.266 all use the same rule, so the codec module re-exports
+/// the shared helper rather than carrying a private copy.
+pub use crate::nal::ebsp_to_rbsp;
 
 /// Inspect the NAL header byte and return `(forbidden_zero_bit,
 /// nal_ref_idc, nal_unit_type)`.

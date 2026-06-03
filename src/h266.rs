@@ -150,22 +150,11 @@ pub fn split_annex_b(buf: &[u8]) -> Vec<&[u8]> {
 /// produce an RBSP (7.3.1.1). Inserted by the encoder after `00 00 0x`
 /// (with `x < 4`) inside the NAL body so a start-code prefix can never
 /// appear inside payload data.
-pub fn ebsp_to_rbsp(ebsp: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(ebsp.len());
-    let mut i = 0;
-    let n = ebsp.len();
-    while i < n {
-        if i + 2 < n && ebsp[i] == 0 && ebsp[i + 1] == 0 && ebsp[i + 2] == 3 {
-            out.push(0);
-            out.push(0);
-            i += 3;
-        } else {
-            out.push(ebsp[i]);
-            i += 1;
-        }
-    }
-    out
-}
+///
+/// H.264, HEVC and H.266 all express the rule identically, so this
+/// module re-exports the shared helper from [`crate::nal::ebsp_to_rbsp`]
+/// rather than carrying a private copy.
+pub use crate::nal::ebsp_to_rbsp;
 
 // ─────────────────────────── NAL header ──────────────────────────────────────
 
