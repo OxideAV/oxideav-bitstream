@@ -26,7 +26,10 @@ use oxideav_bitstream::av1::{
 };
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
-use oxideav_bitstream::h266::{parse_picture_header, NAL_TYPE_PH, PH_PIC_PARAMETER_SET_ID_MAX};
+use oxideav_bitstream::h266::{
+    parse_picture_header, parse_picture_header_with_sps, VvcSps, NAL_TYPE_PH,
+    PH_PIC_PARAMETER_SET_ID_MAX, SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
+};
 use oxideav_bitstream::BitstreamError;
 
 /// Deterministic 64-bit linear-congruential generator (Numerical
@@ -996,4 +999,119 @@ impl<T: core::fmt::Debug> UnwrapErrOrElsePanic<T> for Result<T, BitstreamError> 
             Err(e) => e,
         }
     }
+}
+
+/// Build a [`VvcSps`] stub that only varies the field
+/// [`parse_picture_header_with_sps`] actually reads
+/// (`sps_log2_max_pic_order_cnt_lsb_minus4`). Other fields are filled
+/// with canonical defaults the PH parser does not touch.
+fn sps_for_poc_width(log2_max_poc_lsb_minus4: u8) -> VvcSps {
+    VvcSps {
+        sps_seq_parameter_set_id: 0,
+        sps_video_parameter_set_id: 0,
+        sps_max_sublayers_minus1: 0,
+        sps_chroma_format_idc: 1,
+        sps_log2_ctu_size_minus5: 2,
+        sps_ptl_dpb_hrd_params_present_flag: 0,
+        profile_tier_level: None,
+        sps_pic_width_max_in_luma_samples: 1920,
+        sps_pic_height_max_in_luma_samples: 1080,
+        sps_subpic_info_present_flag: 0,
+        sps_bitdepth_minus8: 2,
+        sps_entropy_coding_sync_enabled_flag: 0,
+        sps_entry_point_offsets_present_flag: 0,
+        sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
+    }
+}
+
+/// Pack a PH RBSP carrying the structural prefix, the `ph_pic_order_cnt_lsb`
+/// `u(v)` field at `poc_width` bits, and — when `gdr_pic == 1` — the
+/// `ph_recovery_poc_cnt` ue(v). The PH parser's spec-driven inverse.
+#[allow(clippy::too_many_arguments)]
+fn build_ph_rbsp_with_poc(
+    gdr_or_irap: u8,
+    non_ref: u8,
+    gdr_pic: u8,
+    inter_allowed: u8,
+    intra_allowed: u8,
+    pps_id: u32,
+    poc_lsb: u32,
+    poc_width: u32,
+    recovery_poc_cnt: Option<u32>,
+) -> Vec<u8> {
+    let mut w = BitWriter::new();
+    w.write_bits(gdr_or_irap as u32, 1);
+    w.write_bits(non_ref as u32, 1);
+    if gdr_or_irap != 0 {
+        w.write_bits(gdr_pic as u32, 1);
+    }
+    w.write_bits(inter_allowed as u32, 1);
+    if inter_allowed != 0 {
+        w.write_bits(intra_allowed as u32, 1);
+    }
+    w.write_ue(pps_id).expect("pps_id within ue range");
+    w.write_bits(poc_lsb, poc_width);
+    if let Some(rpc) = recovery_poc_cnt {
+        w.write_ue(rpc).expect("recovery_poc_cnt within ue range");
+    }
+    w.finish()
+}
+
+#[test]
+fn h266_picture_header_with_sps_round_trips_every_poc_width_and_value() {
+    // Sweep every legal `sps_log2_max_pic_order_cnt_lsb_minus4`
+    // (0..=12 → POC LSB widths 4..=16). For each width, drive a
+    // representative slice of the POC LSB value space — the two
+    // endpoints (0 and `2^width - 1`) plus a randomised tail — through
+    // an IRAP picture (no recovery_poc_cnt) and a GDR picture (with
+    // recovery_poc_cnt), and confirm the parser recovers both fields
+    // exactly. Off-by-one width bugs would shift later bits and
+    // corrupt the recovery_poc_cnt ue(v), so the GDR path is the
+    // sharpest end-to-end check.
+    let mut rng = Lcg::new(0xfeed_face_dead_c0de);
+    let mut paths = 0u32;
+    for log2_max in 0u8..=SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX {
+        let sps = sps_for_poc_width(log2_max);
+        let width = sps.poc_lsb_width();
+        let max_lsb = if width == 32 {
+            u32::MAX
+        } else {
+            (1u32 << width) - 1
+        };
+        // Endpoint + ~40 randomised mid-range values.
+        let mut sample_values: Vec<u32> = vec![0, max_lsb];
+        for _ in 0..40 {
+            sample_values.push(rng.next_u32() & max_lsb);
+        }
+        for &poc_lsb in &sample_values {
+            // IRAP picture (gdr_or_irap=1, gdr_pic=0): no recovery_poc_cnt.
+            let rbsp = build_ph_rbsp_with_poc(1, 0, 0, 1, 1, 0, poc_lsb, width, None);
+            let nal = build_ph_nal(&rbsp);
+            let ph = parse_picture_header_with_sps(&nal, &sps).unwrap_or_else(|e| {
+                panic!("IRAP PH should parse for log2_max={log2_max}, poc_lsb={poc_lsb}: {e:?}")
+            });
+            assert_eq!(ph.ph_pic_order_cnt_lsb, Some(poc_lsb));
+            assert_eq!(ph.ph_recovery_poc_cnt, None);
+            assert!(ph.is_irap());
+            paths += 1;
+
+            // GDR picture (gdr_or_irap=1, gdr_pic=1): recovery_poc_cnt
+            // present. Use the same value as poc_lsb (modulo a small
+            // cap so the ue(v) stays a reasonable size) — the parser
+            // doesn't care, but the round-trip must be exact.
+            let rpc = poc_lsb & 0xff;
+            let rbsp = build_ph_rbsp_with_poc(1, 0, 1, 1, 1, 0, poc_lsb, width, Some(rpc));
+            let nal = build_ph_nal(&rbsp);
+            let ph = parse_picture_header_with_sps(&nal, &sps).unwrap_or_else(|e| {
+                panic!("GDR PH should parse for log2_max={log2_max}, poc_lsb={poc_lsb}: {e:?}")
+            });
+            assert_eq!(ph.ph_pic_order_cnt_lsb, Some(poc_lsb));
+            assert_eq!(ph.ph_recovery_poc_cnt, Some(rpc));
+            assert!(!ph.is_irap());
+            assert!(ph.is_gdr());
+            paths += 1;
+        }
+    }
+    // Sanity: 13 widths × 42 values × 2 picture types = 1092 paths.
+    assert_eq!(paths, 13 * 42 * 2, "expected 1092 IRAP+GDR PH paths");
 }

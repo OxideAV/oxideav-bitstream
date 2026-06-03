@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- H.266 / VVC SPS parser extended past `sps_bitdepth_minus8` (ITU-T
+  H.266 §7.3.2.4). Three new structural fields are surfaced on
+  `VvcSps`: `sps_entropy_coding_sync_enabled_flag` u(1) (the WPP
+  enable HW bridges need for the per-picture VA-API / Vulkan
+  parameter), `sps_entry_point_offsets_present_flag` u(1), and
+  `sps_log2_max_pic_order_cnt_lsb_minus4` u(4). The new field drives
+  the bit-width of `ph_pic_order_cnt_lsb` (7.3.2.8) via
+  `MaxPicOrderCntLsb = 1 << (sps_log2_max_pic_order_cnt_lsb_minus4 +
+  4)`, surfaced as the `VvcSps::poc_lsb_width()` and
+  `VvcSps::max_pic_order_cnt_lsb()` convenience accessors plus a new
+  public constant `SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX = 12`
+  (the spec envelope dictated by `MaxPicOrderCntLsb ≤ 2^16`). Values
+  outside `0..=12` return `BitstreamError::InvalidData`.
+- H.266 / VVC SPS-context picture-header parser
+  `parse_picture_header_with_sps(nal_body, &VvcSps)` (ITU-T H.266
+  §7.3.2.8). Extends the context-free `parse_picture_header()` by
+  threading the active SPS through, so the parser can resolve the
+  `ph_pic_order_cnt_lsb` u(v) width (from
+  `sps_log2_max_pic_order_cnt_lsb_minus4 + 4`) and decode that field
+  plus the conditional `ph_recovery_poc_cnt` ue(v) that follows when
+  `ph_gdr_pic_flag = 1`. Two new optional fields on `VvcPictureHeader`
+  surface those values (`ph_pic_order_cnt_lsb: Option<u32>`,
+  `ph_recovery_poc_cnt: Option<u32>`); both are `Some(_)` only on the
+  SPS-context path and `None` on the context-free
+  `parse_picture_header()` path. Everything past
+  `ph_recovery_poc_cnt` (the `NumExtraPhBits` array, the
+  `sps_poc_msb_cycle_flag` block, every ALF / LMCS / scaling-list /
+  virtual-boundary / RPL / partition-constraint / deblocking /
+  QP-delta sub-block gated on later `sps_*` / `pps_*` flags) stays
+  out of scope.
+- Nine new h266 unit tests cover (a) IRAP picture with 4-bit POC LSB
+  decoding through the SPS context, (b) a GDR picture exercising the
+  `ph_recovery_poc_cnt` path with an 8-bit POC LSB, (c) a non-IRAP
+  picture with `inter_allowed = 0` confirming the inferred-intra
+  branch survives the SPS-context route, (d) a 16-bit POC LSB at the
+  spec maximum (`sps_log2_max_pic_order_cnt_lsb_minus4 = 12`,
+  `poc_lsb = 0xffff`), (e) wrong-NAL-type rejection on
+  `parse_picture_header_with_sps`, (f) truncated input rejection on
+  the SPS-context entry, (g) oversized-`ph_pic_parameter_set_id`
+  rejection through the same entry, (h) the new SPS envelope check
+  (`sps_log2_max_pic_order_cnt_lsb_minus4 = 13` → InvalidData) using
+  the existing 1080p fixture with one byte rewritten, and (i) an
+  independent SPS round-trip through `BitWriter` that asserts the
+  three new fields decode to their written values. Plus one new
+  `tests/h266_nal_walker.rs` integration test driving a synthetic
+  Annex-B VPS + SPS + PPS + PH + IDR_W_RADL AU end-to-end through
+  `split_annex_b` → `parse_nal_header` → `parse_sps` →
+  `parse_picture_header_with_sps` and asserting the recovered
+  `ph_pic_order_cnt_lsb`.
+- One new `tests/roundtrip_props.rs` invariant: a 1092-path
+  exhaustive sweep that drives `parse_picture_header_with_sps`
+  through every legal POC LSB width
+  (`sps_log2_max_pic_order_cnt_lsb_minus4 = 0..=12`) with both an
+  IRAP and a GDR picture per width, exercising endpoint values
+  (`0` and `2^width - 1`) and 40 random mid-range values per width.
+
 - H.266 / VVC picture-header structural-prefix parser (ITU-T H.266
   §7.3.2.7 / §7.3.2.8). New `parse_picture_header()` decodes a PH NAL
   body (`NAL_TYPE_PH`) through `ph_pic_parameter_set_id` — the always-

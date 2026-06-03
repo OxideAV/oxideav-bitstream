@@ -16,8 +16,10 @@
 //!   segment header.
 //! - [`h266`] — Annex-B framing, 2-byte NAL header decode, VCL /
 //!   IRAP / parameter-set classifiers, structural VPS / SPS / PPS
-//!   parsers and the picture-header structural prefix
-//!   (7.3.2.8 through `ph_pic_parameter_set_id`).
+//!   parsers, the picture-header structural prefix
+//!   (7.3.2.8 through `ph_pic_parameter_set_id`) and an SPS-context
+//!   PH variant (`parse_picture_header_with_sps`) that extends through
+//!   `ph_pic_order_cnt_lsb` u(v) and `ph_recovery_poc_cnt` ue(v).
 //! - [`av1`] — leb128 reader/writer, OBU walker + emitter, sequence
 //!   header and key-frame OBU parsing.
 //!

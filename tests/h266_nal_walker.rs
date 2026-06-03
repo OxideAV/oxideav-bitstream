@@ -12,10 +12,11 @@
 //! is prefixed with the two-byte header and then padded with one
 //! filler byte so `split_annex_b` actually has a body to slice.
 
+use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::h266::{
-    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_picture_header, parse_pps,
-    parse_sps, parse_vps, split_annex_b, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS,
-    NAL_TYPE_SPS, NAL_TYPE_VPS,
+    is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_picture_header,
+    parse_picture_header_with_sps, parse_pps, parse_sps, parse_vps, split_annex_b,
+    NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
 /// Build a 2-byte VVC NAL header for `(nal_unit_type, nuh_layer_id,
@@ -232,6 +233,87 @@ fn walks_au_and_parses_picture_header_structural_prefix() {
     assert_eq!(ph.ph_pic_parameter_set_id, 0);
     assert!(ph.is_irap());
     assert!(!ph.is_gdr());
+}
+
+#[test]
+fn walks_au_and_parses_picture_header_with_sps_context() {
+    // End-to-end SPS-→-PH context-routing walk. Build a synthetic AU
+    // whose SPS carries `sps_log2_max_pic_order_cnt_lsb_minus4 = 4`
+    // (POC LSB u(8)) and whose PH packs a non-zero
+    // `ph_pic_order_cnt_lsb = 0xa5`. Confirms a HW bridge can run
+    //   split_annex_b -> parse_nal_header -> parse_sps -> parse_picture_header_with_sps
+    // and recover the POC LSB the GPU needs for reference-picture-list
+    // management, not just the prefix flags.
+    //
+    // Build the SPS RBSP via `BitWriter` (the canonical inverse path):
+    let mut w = BitWriter::new();
+    w.write_bits(0, 4); // sps_seq_parameter_set_id
+    w.write_bits(0, 4); // sps_video_parameter_set_id
+    w.write_bits(0, 3); // sps_max_sublayers_minus1
+    w.write_bits(1, 2); // sps_chroma_format_idc = 4:2:0
+    w.write_bits(2, 2); // sps_log2_ctu_size_minus5 = 2
+    w.write_bits(0, 1); // sps_ptl_dpb_hrd_params_present_flag
+    w.write_bits(0, 1); // sps_gdr_enabled_flag
+    w.write_bits(0, 1); // sps_ref_pic_resampling_enabled_flag
+    w.write_ue(1920).expect("width ue");
+    w.write_ue(1080).expect("height ue");
+    w.write_bits(0, 1); // sps_conformance_window_flag
+    w.write_bits(0, 1); // sps_subpic_info_present_flag
+    w.write_ue(2).expect("bitdepth ue"); // sps_bitdepth_minus8 = 2 (10-bit)
+    w.write_bits(0, 1); // sps_entropy_coding_sync_enabled_flag
+    w.write_bits(0, 1); // sps_entry_point_offsets_present_flag
+    w.write_bits(4, 4); // sps_log2_max_pic_order_cnt_lsb_minus4 = 4 → POC LSB u(8)
+    let sps_rbsp = w.finish();
+
+    let mut sps_nal_body = Vec::new();
+    sps_nal_body.extend_from_slice(&vvc_hdr(NAL_TYPE_SPS, 0, 1));
+    sps_nal_body.extend_from_slice(&sps_rbsp);
+
+    // Build the PH RBSP: IRAP picture, no GDR → no recovery_poc_cnt.
+    // Carry a deliberately non-canonical POC LSB so a wrong width would
+    // truncate the field and miss it in the assertion.
+    let mut w = BitWriter::new();
+    w.write_bits(1, 1); // gdr_or_irap
+    w.write_bits(0, 1); // non_ref
+    w.write_bits(0, 1); // gdr_pic = 0 → IRAP
+    w.write_bits(1, 1); // inter_allowed
+    w.write_bits(1, 1); // intra_allowed
+    w.write_ue(0).expect("pps_id ue");
+    w.write_bits(0xa5, 8); // ph_pic_order_cnt_lsb
+    let ph_rbsp = w.finish();
+
+    let mut ph_nal_body = Vec::new();
+    ph_nal_body.extend_from_slice(&vvc_hdr(NAL_TYPE_PH, 0, 1));
+    ph_nal_body.extend_from_slice(&ph_rbsp);
+
+    let mut stream = Vec::new();
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_VPS, 0, 1), 0xa1);
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&sps_nal_body);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_PPS, 0, 1), 0xa3);
+    stream.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+    stream.extend_from_slice(&ph_nal_body);
+    push_nal(&mut stream, vvc_hdr(NAL_TYPE_IDR_W_RADL, 0, 1), 0xa5);
+
+    let nals = split_annex_b(&stream);
+    assert_eq!(nals.len(), 5);
+
+    let sps_body = nals
+        .iter()
+        .find(|n| parse_nal_header(n).map(|h| h.nal_unit_type) == Ok(NAL_TYPE_SPS))
+        .expect("SPS NAL present");
+    let sps = parse_sps(sps_body).expect("SPS parses");
+    assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 4);
+    assert_eq!(sps.poc_lsb_width(), 8);
+
+    let ph_body = nals
+        .iter()
+        .find(|n| parse_nal_header(n).map(|h| h.nal_unit_type) == Ok(NAL_TYPE_PH))
+        .expect("PH NAL present");
+    let ph = parse_picture_header_with_sps(ph_body, &sps).expect("PH parses with SPS ctx");
+    assert_eq!(ph.ph_pic_order_cnt_lsb, Some(0xa5));
+    assert_eq!(ph.ph_recovery_poc_cnt, None);
+    assert!(ph.is_irap());
 }
 
 #[test]

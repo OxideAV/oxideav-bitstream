@@ -586,6 +586,24 @@ pub struct VvcSps {
     /// `8 + sps_bitdepth_minus8`. Range 0..=8 per the spec
     /// (`BitDepth ≤ 16`).
     pub sps_bitdepth_minus8: u32,
+    /// `sps_entropy_coding_sync_enabled_flag` u(1) (7.4.3.4). When 1,
+    /// the WPP-style synchronization process for context variables is
+    /// applied at the first CTB of every CTB row in each tile in each
+    /// picture referring to the SPS. Surfaced because HW bridges need
+    /// the flag to populate the per-picture WPP parameter on the
+    /// VA-API / Vulkan side.
+    pub sps_entropy_coding_sync_enabled_flag: u8,
+    /// `sps_entry_point_offsets_present_flag` u(1) (7.4.3.4). When 1,
+    /// entry-point offsets for tiles / tile-specific CTU rows may be
+    /// signalled in slice headers of pictures referring to the SPS.
+    pub sps_entry_point_offsets_present_flag: u8,
+    /// `sps_log2_max_pic_order_cnt_lsb_minus4` u(4) (7.4.3.4). Drives
+    /// the bit-width of `ph_pic_order_cnt_lsb` (7.3.2.8) via
+    /// `MaxPicOrderCntLsb = 1 << (sps_log2_max_pic_order_cnt_lsb_minus4
+    /// + 4)`. Spec range is 0..=12 (the PH POC field caps at 16 bits);
+    /// values outside that envelope return
+    /// [`BitstreamError::InvalidData`].
+    pub sps_log2_max_pic_order_cnt_lsb_minus4: u8,
 }
 
 impl VvcSps {
@@ -604,7 +622,24 @@ impl VvcSps {
     pub fn bit_depth(&self) -> u32 {
         8 + self.sps_bitdepth_minus8
     }
+
+    /// Width of `ph_pic_order_cnt_lsb` in bits per 7.4.3.4 /
+    /// 7.4.3.8: `sps_log2_max_pic_order_cnt_lsb_minus4 + 4`.
+    pub fn poc_lsb_width(&self) -> u32 {
+        self.sps_log2_max_pic_order_cnt_lsb_minus4 as u32 + 4
+    }
+
+    /// `MaxPicOrderCntLsb = 1 << poc_lsb_width()` (7.4.3.4).
+    pub fn max_pic_order_cnt_lsb(&self) -> u32 {
+        1u32 << self.poc_lsb_width()
+    }
 }
+
+/// Spec upper bound on `sps_log2_max_pic_order_cnt_lsb_minus4`
+/// (7.4.3.4): `MaxPicOrderCntLsb` is bounded by 2^16, hence
+/// `sps_log2_max_pic_order_cnt_lsb_minus4 ≤ 12`. Surfaced so callers
+/// can validate against the same envelope the parser enforces.
+pub const SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX: u8 = 12;
 
 /// Strip the two-byte NAL header from an SPS NAL body (the `0x0_F_..`
 /// header bytes that [`parse_nal_header`] decodes), then parse the
@@ -694,6 +729,14 @@ pub fn parse_sps(nal_body: &[u8]) -> Result<VvcSps, BitstreamError> {
             "sps_bitdepth_minus8 = {sps_bitdepth_minus8} > 8 (BitDepth ≤ 16)"
         )));
     }
+    let sps_entropy_coding_sync_enabled_flag = r.u(1) as u8;
+    let sps_entry_point_offsets_present_flag = r.u(1) as u8;
+    let sps_log2_max_pic_order_cnt_lsb_minus4 = r.u(4) as u8;
+    if sps_log2_max_pic_order_cnt_lsb_minus4 > SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX {
+        return Err(BitstreamError::invalid(format!(
+            "sps_log2_max_pic_order_cnt_lsb_minus4 = {sps_log2_max_pic_order_cnt_lsb_minus4} > {SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX} (MaxPicOrderCntLsb ≤ 2^16)"
+        )));
+    }
 
     Ok(VvcSps {
         sps_seq_parameter_set_id,
@@ -707,6 +750,9 @@ pub fn parse_sps(nal_body: &[u8]) -> Result<VvcSps, BitstreamError> {
         sps_pic_height_max_in_luma_samples,
         sps_subpic_info_present_flag,
         sps_bitdepth_minus8,
+        sps_entropy_coding_sync_enabled_flag,
+        sps_entry_point_offsets_present_flag,
+        sps_log2_max_pic_order_cnt_lsb_minus4,
     })
 }
 
@@ -903,6 +949,22 @@ pub struct VvcPictureHeader {
     /// `pps_pic_parameter_set_id` u(6) in 7.4.3.5); values outside that
     /// range are rejected as [`BitstreamError::InvalidData`].
     pub ph_pic_parameter_set_id: u8,
+    /// `ph_pic_order_cnt_lsb` u(v) (7.4.3.8). Width is
+    /// `sps_log2_max_pic_order_cnt_lsb_minus4 + 4` bits, derived from
+    /// the active SPS — see [`VvcSps::poc_lsb_width`]. Always
+    /// `Some(_)` when the picture header was decoded through
+    /// [`parse_picture_header_with_sps`] (which threads the SPS
+    /// context); `None` when decoded through the context-free
+    /// [`parse_picture_header`] entry point that stops at
+    /// `ph_pic_parameter_set_id`.
+    pub ph_pic_order_cnt_lsb: Option<u32>,
+    /// `ph_recovery_poc_cnt` ue(v) (7.4.3.8). Present only when
+    /// `ph_gdr_pic_flag = 1`. `None` for IRAP / non-GDR pictures and
+    /// for context-free decodes via [`parse_picture_header`]. Per the
+    /// spec the value is signalled by the encoder; the parser surfaces
+    /// it directly without further range checks (the field is
+    /// constrained per profile but those tables are out of scope).
+    pub ph_recovery_poc_cnt: Option<u32>,
 }
 
 impl VvcPictureHeader {
@@ -1002,6 +1064,95 @@ pub fn parse_picture_header(nal_body: &[u8]) -> Result<VvcPictureHeader, Bitstre
         ph_inter_slice_allowed_flag,
         ph_intra_slice_allowed_flag,
         ph_pic_parameter_set_id,
+        ph_pic_order_cnt_lsb: None,
+        ph_recovery_poc_cnt: None,
+    })
+}
+
+/// Strip the two-byte NAL header from a PH NAL body, then parse the
+/// `picture_header_structure()` (7.3.2.8) through `ph_pic_order_cnt_lsb`
+/// (and `ph_recovery_poc_cnt` when present), using the bit-width of the
+/// POC LSB field supplied by the active SPS context.
+///
+/// This is the SPS-context-aware companion to [`parse_picture_header`].
+/// The shorter variant stops at `ph_pic_parameter_set_id` because the
+/// next field — `ph_pic_order_cnt_lsb` — is `u(v)` with a width derived
+/// from `sps_log2_max_pic_order_cnt_lsb_minus4 + 4` (7.4.3.4 / 7.4.3.8).
+/// A HW bridge that has already parsed the active SPS (via
+/// [`parse_sps`]) can pass that SPS in here to recover the POC LSB —
+/// the field every reference-picture-list management API consumes — and,
+/// for GDR pictures, the `ph_recovery_poc_cnt` ue(v) that signals when
+/// the GDR refresh completes.
+///
+/// Parsing stops immediately after those two fields. Every later
+/// picture-header bit (the `ph_extra_bit[i]` array gated on
+/// `NumExtraPhBits`, the `sps_poc_msb_cycle_flag` block, all the ALF /
+/// LMCS / scaling-list / virtual-boundary / RPL / partition-constraint /
+/// deblocking / QP-delta sub-blocks gated on `sps_*` and `pps_*` flags)
+/// is out of scope for this round — they each carry their own
+/// SPS / PPS-driven dependency chain and would multiply the parser's
+/// surface several-fold for fields HW bridges don't read directly.
+///
+/// Returns [`BitstreamError::InvalidData`] when the NAL is not
+/// [`NAL_TYPE_PH`] or when `ph_pic_parameter_set_id` exceeds the spec
+/// range (>63). The SPS's `sps_log2_max_pic_order_cnt_lsb_minus4` is
+/// trusted as already-validated by [`parse_sps`] (which enforces the
+/// 0..=12 envelope).
+pub fn parse_picture_header_with_sps(
+    nal_body: &[u8],
+    sps: &VvcSps,
+) -> Result<VvcPictureHeader, BitstreamError> {
+    if nal_body.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "H.266 PH NAL needs at least the 2-byte header",
+        ));
+    }
+    let header = parse_nal_header(nal_body)?;
+    if header.nal_unit_type != NAL_TYPE_PH {
+        return Err(BitstreamError::invalid(format!(
+            "expected PH NAL (type {}), got {}",
+            NAL_TYPE_PH, header.nal_unit_type
+        )));
+    }
+    let rbsp = ebsp_to_rbsp(&nal_body[2..]);
+    let mut r = BitReader::new(&rbsp);
+
+    let ph_gdr_or_irap_pic_flag = r.u(1) as u8;
+    let ph_non_ref_pic_flag = r.u(1) as u8;
+    let ph_gdr_pic_flag = if ph_gdr_or_irap_pic_flag != 0 {
+        Some(r.u(1) as u8)
+    } else {
+        None
+    };
+    let ph_inter_slice_allowed_flag = r.u(1) as u8;
+    let ph_intra_slice_allowed_flag = if ph_inter_slice_allowed_flag != 0 {
+        Some(r.u(1) as u8)
+    } else {
+        None
+    };
+    let ph_pic_parameter_set_id_u32 = r.ue()?;
+    if ph_pic_parameter_set_id_u32 > PH_PIC_PARAMETER_SET_ID_MAX as u32 {
+        return Err(BitstreamError::invalid(format!(
+            "ph_pic_parameter_set_id = {ph_pic_parameter_set_id_u32} > {PH_PIC_PARAMETER_SET_ID_MAX} (spec range 0..=63)"
+        )));
+    }
+    let ph_pic_parameter_set_id = ph_pic_parameter_set_id_u32 as u8;
+    let ph_pic_order_cnt_lsb = r.u(sps.poc_lsb_width());
+    let ph_recovery_poc_cnt = if ph_gdr_pic_flag == Some(1) {
+        Some(r.ue()?)
+    } else {
+        None
+    };
+
+    Ok(VvcPictureHeader {
+        ph_gdr_or_irap_pic_flag,
+        ph_non_ref_pic_flag,
+        ph_gdr_pic_flag,
+        ph_inter_slice_allowed_flag,
+        ph_intra_slice_allowed_flag,
+        ph_pic_parameter_set_id,
+        ph_pic_order_cnt_lsb: Some(ph_pic_order_cnt_lsb),
+        ph_recovery_poc_cnt,
     })
 }
 
@@ -1190,6 +1341,15 @@ mod tests {
         assert_eq!(sps.sps_subpic_info_present_flag, 0);
         assert_eq!(sps.sps_bitdepth_minus8, 2);
         assert_eq!(sps.bit_depth(), 10);
+        // Bit 65 = byte 8 bit 1 = 0, bit 66 = byte 8 bit 2 = 0,
+        // bits 67..70 = byte 8 bits 3..6 = 0000 (the 0x80 padding only
+        // sets bit 0). So the WPP / entry-point flags and the POC LSB
+        // width all decode to their canonical-zero defaults.
+        assert_eq!(sps.sps_entropy_coding_sync_enabled_flag, 0);
+        assert_eq!(sps.sps_entry_point_offsets_present_flag, 0);
+        assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 0);
+        assert_eq!(sps.poc_lsb_width(), 4);
+        assert_eq!(sps.max_pic_order_cnt_lsb(), 16);
     }
 
     #[test]
@@ -1237,6 +1397,22 @@ mod tests {
         assert_eq!(sps.sps_subpic_info_present_flag, 0);
         assert_eq!(sps.sps_bitdepth_minus8, 2);
         assert_eq!(sps.bit_depth(), 10);
+        // The 4K fixture predates the WPP / entry-point / POC-LSB-width
+        // extension; the three new fields fall into the fixture's
+        // trailing padding bytes. Assert what the trailing zeros
+        // actually carry rather than guessing — the parser's contract
+        // is to decode whatever bits the spec says are there, and the
+        // fixture's `0xfc 0xc0` tail makes those three fields
+        // deterministic.
+        // The 4K fixture predates this round; its trailing bytes
+        // (`0xfc 0xc0`) happen to leave the three newly-walked fields
+        // sitting on zeros — verify that explicitly so a future tail
+        // tweak can't silently regress the decode.
+        assert_eq!(sps.sps_entropy_coding_sync_enabled_flag, 0);
+        assert_eq!(sps.sps_entry_point_offsets_present_flag, 0);
+        assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 0);
+        assert_eq!(sps.poc_lsb_width(), 4);
+        assert_eq!(sps.max_pic_order_cnt_lsb(), 16);
     }
 
     #[test]
@@ -1761,10 +1937,240 @@ mod tests {
                             assert_eq!(ph.ph_pic_parameter_set_id, 7);
                             // is_irap / is_gdr are mutually exclusive.
                             assert!(!(ph.is_irap() && ph.is_gdr()));
+                            // The context-free parser stops at
+                            // `ph_pic_parameter_set_id` — both POC
+                            // fields stay `None` regardless of which
+                            // flag branch the picture took.
+                            assert!(ph.ph_pic_order_cnt_lsb.is_none());
+                            assert!(ph.ph_recovery_poc_cnt.is_none());
                         }
                     }
                 }
             }
         }
+    }
+
+    // ── picture-header SPS-context tests ─────────────────────────────────────
+
+    /// Build a [`VvcSps`] stub carrying only the fields
+    /// [`parse_picture_header_with_sps`] depends on
+    /// (`sps_log2_max_pic_order_cnt_lsb_minus4`). Other fields are
+    /// filled with arbitrary canonical values; the PH parser does not
+    /// read them.
+    fn sps_with_poc_width(log2_max_poc_lsb_minus4: u8) -> VvcSps {
+        VvcSps {
+            sps_seq_parameter_set_id: 0,
+            sps_video_parameter_set_id: 0,
+            sps_max_sublayers_minus1: 0,
+            sps_chroma_format_idc: 1,
+            sps_log2_ctu_size_minus5: 2,
+            sps_ptl_dpb_hrd_params_present_flag: 0,
+            profile_tier_level: None,
+            sps_pic_width_max_in_luma_samples: 1920,
+            sps_pic_height_max_in_luma_samples: 1080,
+            sps_subpic_info_present_flag: 0,
+            sps_bitdepth_minus8: 2,
+            sps_entropy_coding_sync_enabled_flag: 0,
+            sps_entry_point_offsets_present_flag: 0,
+            sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
+        }
+    }
+
+    /// Build a PH RBSP that carries the structural prefix
+    /// (`gdr_or_irap`, `non_ref`, `gdr_pic`, `inter_allowed`,
+    /// `intra_allowed`, `pps_id`) plus a POC LSB field
+    /// (`poc_lsb_value` `poc_lsb_width` bits wide) and — when
+    /// `gdr_pic = 1` — a `recovery_poc_cnt` ue(v).
+    #[allow(clippy::too_many_arguments)]
+    fn build_ph_rbsp_with_poc(
+        gdr_or_irap: u8,
+        non_ref: u8,
+        gdr_pic: u8,
+        inter_allowed: u8,
+        intra_allowed: u8,
+        pps_id: u32,
+        poc_lsb_value: u32,
+        poc_lsb_width: u32,
+        recovery_poc_cnt: Option<u32>,
+    ) -> Vec<u8> {
+        use crate::bit_writer::BitWriter;
+        let mut w = BitWriter::new();
+        w.write_bits(gdr_or_irap as u32, 1);
+        w.write_bits(non_ref as u32, 1);
+        if gdr_or_irap != 0 {
+            w.write_bits(gdr_pic as u32, 1);
+        }
+        w.write_bits(inter_allowed as u32, 1);
+        if inter_allowed != 0 {
+            w.write_bits(intra_allowed as u32, 1);
+        }
+        w.write_ue(pps_id).expect("pps_id within ue range");
+        w.write_bits(poc_lsb_value, poc_lsb_width);
+        if let Some(rpc) = recovery_poc_cnt {
+            w.write_ue(rpc).expect("recovery_poc_cnt within ue range");
+        }
+        w.finish()
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_irap_4bit_poc() {
+        // sps_log2_max_pic_order_cnt_lsb_minus4 = 0 → POC LSB is u(4).
+        // gdr_or_irap=1, non_ref=0, gdr_pic=0 (IRAP), inter=1, intra=1,
+        // pps_id=0, poc_lsb=5 — the smallest non-canonical value to
+        // verify we're actually reading the field rather than zero-
+        // padding.
+        let sps = sps_with_poc_width(0);
+        let rbsp = build_ph_rbsp_with_poc(1, 0, 0, 1, 1, 0, 5, sps.poc_lsb_width(), None);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header_with_sps(&nal, &sps).expect("PH parses with SPS ctx");
+        assert_eq!(ph.ph_gdr_or_irap_pic_flag, 1);
+        assert_eq!(ph.ph_non_ref_pic_flag, 0);
+        assert_eq!(ph.ph_gdr_pic_flag, Some(0));
+        assert_eq!(ph.ph_inter_slice_allowed_flag, 1);
+        assert_eq!(ph.ph_intra_slice_allowed_flag, Some(1));
+        assert_eq!(ph.ph_pic_parameter_set_id, 0);
+        assert_eq!(ph.ph_pic_order_cnt_lsb, Some(5));
+        // ph_gdr_pic_flag = 0 → ph_recovery_poc_cnt is absent.
+        assert_eq!(ph.ph_recovery_poc_cnt, None);
+        assert!(ph.is_irap());
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_gdr_carries_recovery_poc() {
+        // sps_log2_max_pic_order_cnt_lsb_minus4 = 4 → POC LSB is u(8).
+        // gdr_or_irap=1, gdr_pic=1 → GDR picture → ph_recovery_poc_cnt
+        // is present (= 7 here, ue(v) code '0001000' = 7 bits).
+        let sps = sps_with_poc_width(4);
+        let rbsp = build_ph_rbsp_with_poc(1, 1, 1, 1, 1, 5, 0x7f, sps.poc_lsb_width(), Some(7));
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header_with_sps(&nal, &sps).expect("GDR PH parses with SPS ctx");
+        assert_eq!(ph.ph_gdr_pic_flag, Some(1));
+        assert_eq!(ph.ph_pic_parameter_set_id, 5);
+        assert_eq!(ph.ph_pic_order_cnt_lsb, Some(0x7f));
+        assert_eq!(ph.ph_recovery_poc_cnt, Some(7));
+        assert!(!ph.is_irap());
+        assert!(ph.is_gdr());
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_non_irap_inferred_intra_no_recovery() {
+        // gdr_or_irap=0 → ph_gdr_pic_flag absent → ph_recovery_poc_cnt
+        // absent. inter_allowed=0 → ph_intra_slice_allowed_flag is
+        // inferred (1). Verify the inferred-intra branch is preserved
+        // when the SPS-context parser threads the POC field.
+        let sps = sps_with_poc_width(0);
+        let rbsp = build_ph_rbsp_with_poc(0, 0, 0, 0, 0, 1, 0xa, sps.poc_lsb_width(), None);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header_with_sps(&nal, &sps).expect("non-IRAP PH parses");
+        assert_eq!(ph.ph_gdr_or_irap_pic_flag, 0);
+        assert_eq!(ph.ph_gdr_pic_flag, None);
+        assert_eq!(ph.ph_inter_slice_allowed_flag, 0);
+        assert_eq!(ph.ph_intra_slice_allowed_flag, None);
+        assert_eq!(ph.intra_slice_allowed(), 1);
+        assert_eq!(ph.ph_pic_parameter_set_id, 1);
+        assert_eq!(ph.ph_pic_order_cnt_lsb, Some(0xa));
+        assert_eq!(ph.ph_recovery_poc_cnt, None);
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_max_width_16bit_poc() {
+        // sps_log2_max_pic_order_cnt_lsb_minus4 = 12 (the spec maximum)
+        // → POC LSB is u(16). Round-trip the largest legal POC LSB
+        // value (0xffff) to confirm the parser handles the full 16-bit
+        // envelope without truncation.
+        let sps = sps_with_poc_width(SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX);
+        assert_eq!(sps.poc_lsb_width(), 16);
+        let rbsp = build_ph_rbsp_with_poc(0, 0, 0, 1, 0, 0, 0xffff, sps.poc_lsb_width(), None);
+        let nal = build_ph_nal(&rbsp);
+        let ph = parse_picture_header_with_sps(&nal, &sps).expect("16-bit POC PH parses");
+        assert_eq!(ph.ph_pic_order_cnt_lsb, Some(0xffff));
+        assert_eq!(ph.ph_recovery_poc_cnt, None);
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_rejects_wrong_nal_type() {
+        let sps = sps_with_poc_width(0);
+        let mut nal = vec![0u8; 4];
+        nal[0] = 0;
+        nal[1] = (NAL_TYPE_SPS << 3) | 1;
+        nal[2] = 0xff;
+        nal[3] = 0xff;
+        let err = parse_picture_header_with_sps(&nal, &sps)
+            .expect_err("SPS NAL must be rejected by parse_picture_header_with_sps");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_rejects_truncated() {
+        let sps = sps_with_poc_width(0);
+        let err =
+            parse_picture_header_with_sps(&[0x00], &sps).expect_err("1-byte input must error");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn parse_picture_header_with_sps_rejects_oversized_pps_id() {
+        // SPS-context parser must enforce the same
+        // `ph_pic_parameter_set_id ≤ 63` envelope the context-free
+        // variant does.
+        let sps = sps_with_poc_width(0);
+        let rbsp = build_ph_rbsp_with_poc(0, 0, 0, 0, 0, 64, 0, sps.poc_lsb_width(), None);
+        let nal = build_ph_nal(&rbsp);
+        let err = parse_picture_header_with_sps(&nal, &sps)
+            .expect_err("oversized ph_pic_parameter_set_id must be rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn parse_sps_rejects_oversized_log2_max_pic_order_cnt_lsb() {
+        // sps_log2_max_pic_order_cnt_lsb_minus4 = 13 (one past the
+        // 0..=12 envelope dictated by `MaxPicOrderCntLsb ≤ 2^16`).
+        // Reuses the 1080p fixture and rewrites byte 8 so the u(4) PoC
+        // width field carries 13 = 0b1101 instead of 0.
+        //
+        // Byte 8 layout (8 bits = stream bits 64..71):
+        //   bit 64 = trailing 1 of sps_bitdepth_minus8 = 1 (mask 0x80)
+        //   bit 65 = sps_entropy_coding_sync_enabled_flag         (mask 0x40)
+        //   bit 66 = sps_entry_point_offsets_present_flag         (mask 0x20)
+        //   bits 67..70 = sps_log2_max_pic_order_cnt_lsb_minus4   (mask 0x1e)
+        // Setting bits 67..70 = 1101 → mask 0x1a → byte = 0x80 | 0x1a = 0x9a.
+        let rbsp = [0x00, 0x0c, 0x00, 0x0f, 0x02, 0x00, 0x43, 0x91, 0x9a];
+        let nal = build_sps_nal(&rbsp);
+        let err = parse_sps(&nal)
+            .expect_err("sps_log2_max_pic_order_cnt_lsb_minus4 = 13 must be rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn parse_sps_with_nonzero_log2_max_pic_order_cnt_lsb_round_trips() {
+        // Independent fixture construction: build the SPS RBSP with
+        // `BitWriter` so the POC width is deterministic (=8). Confirms
+        // the parser surfaces the exact value the encoder wrote.
+        use crate::bit_writer::BitWriter;
+        let mut w = BitWriter::new();
+        w.write_bits(0, 4); // sps_seq_parameter_set_id
+        w.write_bits(0, 4); // sps_video_parameter_set_id
+        w.write_bits(0, 3); // sps_max_sublayers_minus1
+        w.write_bits(1, 2); // sps_chroma_format_idc = 4:2:0
+        w.write_bits(2, 2); // sps_log2_ctu_size_minus5 = 2 (CTU 128)
+        w.write_bits(0, 1); // sps_ptl_dpb_hrd_params_present_flag
+        w.write_bits(0, 1); // sps_gdr_enabled_flag
+        w.write_bits(0, 1); // sps_ref_pic_resampling_enabled_flag
+        w.write_ue(1920).expect("width ue"); // sps_pic_width_max
+        w.write_ue(1080).expect("height ue"); // sps_pic_height_max
+        w.write_bits(0, 1); // sps_conformance_window_flag
+        w.write_bits(0, 1); // sps_subpic_info_present_flag
+        w.write_ue(2).expect("bitdepth ue"); // sps_bitdepth_minus8 = 2 (10-bit)
+        w.write_bits(1, 1); // sps_entropy_coding_sync_enabled_flag
+        w.write_bits(1, 1); // sps_entry_point_offsets_present_flag
+        w.write_bits(4, 4); // sps_log2_max_pic_order_cnt_lsb_minus4 = 4 → POC LSB u(8)
+        let rbsp = w.finish();
+        let nal = build_sps_nal(&rbsp);
+        let sps = parse_sps(&nal).expect("SPS round-trips through BitWriter");
+        assert_eq!(sps.sps_entropy_coding_sync_enabled_flag, 1);
+        assert_eq!(sps.sps_entry_point_offsets_present_flag, 1);
+        assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 4);
+        assert_eq!(sps.poc_lsb_width(), 8);
+        assert_eq!(sps.max_pic_order_cnt_lsb(), 256);
     }
 }
