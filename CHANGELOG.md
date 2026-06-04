@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IVF muxer (`ivf::write_header`, `ivf::write_frame`, `ivf::write_all`)
+  — the inverse of the existing demuxer (`parse_header`, `parse_frame`,
+  `parse_all`). `write_header` emits a 32-byte `DKIF` global header
+  exactly matching the reader's strict fixed-byte checks (version = 0
+  LE u16, `header_len` = 32 LE u16, zeroed reserved tail). `write_frame`
+  appends a 12-byte per-frame header (LE u32 size + LE u64 timestamp)
+  followed by the payload bytes. `write_all` is a convenience that
+  emits the global header plus an iterator of `(timestamp, payload)`
+  frames in one allocation. Each writer returns the
+  `(start, end)` byte range covering the appended block so callers
+  composing a larger container can locate the new bytes. `write_frame`
+  validates `payload.len() <= IVF_FRAME_PAYLOAD_MAX` (the u32 wire
+  envelope) and `write_all` does the same pre-flight sweep across every
+  frame, leaving the output buffer untouched on rejection — mirroring
+  the rejection contract on `av1::write_obu` / `av1::write_leb128`.
+  Three new public byte-length constants document the wire-format
+  envelope: `IVF_HEADER_LEN = 32`, `IVF_FRAME_HEADER_LEN = 12`,
+  `IVF_FRAME_PAYLOAD_MAX = u32::MAX as usize`. Ten new `ivf` unit
+  tests cover the lone-header round-trip, prefix-preserving append,
+  reserved-tail zeroing, single-frame and empty-payload round-trips,
+  multi-frame `write_all` ↔ `parse_all`, the empty-frame-list case,
+  documented byte-offset placement, in-order concatenation of two
+  frames, and the boundary constant pinning. Five new
+  `roundtrip_props.rs` invariants exercise the writer: a 5000-iteration
+  randomised global-header round-trip across four FourCCs and every
+  u16/u32 field width, a 2000-iteration frame round-trip with payload
+  lengths in 0..=4096, a 200-stream multi-frame `write_all`
+  round-trip with 0..=16 frames per stream and per-frame payload
+  lengths up to 255 bytes, a 200-iteration "returned-range locates
+  appended block" check on top of a hand-written prefix, and a
+  fixed-byte-layout pin that matches the reader's strict checks.
+  The `fuzz/reader.rs` target now also (a) calls `parse_header`,
+  `parse_frame` and `parse_all` on attacker bytes (panic-hardening),
+  and (b) drives `write_all` + an incremental `write_header` +
+  `write_frame` sequence from attacker-derived fields and asserts the
+  two paths produce byte-identical output that `parse_all` recovers.
+
 - New `nal` module hosting the shared
   `emulation_prevention_three_byte` (`0x03`) byte-level helpers used by
   every NAL-framed codec in the crate. `nal::ebsp_to_rbsp` (the

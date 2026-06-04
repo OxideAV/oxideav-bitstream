@@ -31,6 +31,10 @@ use oxideav_bitstream::av1::{
 };
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
+use oxideav_bitstream::ivf::{
+    parse_all, parse_frame, parse_header, write_all, write_frame, write_header, IvfHeader,
+    IVF_FRAME_HEADER_LEN, IVF_HEADER_LEN,
+};
 
 fuzz_target!(|data: &[u8]| {
     // 1. Drive the reader through an opcode tape. The first half of the
@@ -64,6 +68,18 @@ fuzz_target!(|data: &[u8]| {
     //    read_obu reproduces the same header + payload range — or that
     //    rejected headers leave the buffer untouched.
     obu_writer_roundtrip(data);
+
+    // 7. IVF reader panic-hardening: the demuxer must never panic on
+    //    arbitrary attacker bytes, both via the per-call entry points
+    //    and the convenience `parse_all` walker.
+    let _ = parse_header(data);
+    let _ = parse_frame(data);
+    let _ = parse_all(data);
+
+    // 8. IVF write_header / write_frame / write_all round-trip:
+    //    synthesise a header + frame list from attacker bytes,
+    //    frame them, then assert parse_all reproduces the originals.
+    ivf_writer_roundtrip(data);
 });
 
 /// Treat `data` as an opcode tape and a payload simultaneously, running
@@ -211,8 +227,7 @@ fn obu_writer_roundtrip(data: &[u8]) {
             Ok((start, end)) => {
                 assert_eq!(start, 0);
                 assert_eq!(end, out.len());
-                let (got, ps, pe, next) =
-                    read_obu(&out, start).expect("framed OBU must decode");
+                let (got, ps, pe, next) = read_obu(&out, start).expect("framed OBU must decode");
                 assert_eq!(got, header, "header round-trip");
                 assert_eq!(pe - ps, payload.len(), "payload size");
                 assert_eq!(&out[ps..pe], payload, "payload bytes");
@@ -265,4 +280,93 @@ fn leb128_writer_roundtrip(data: &[u8]) {
         }
         emitted += 1;
     }
+}
+
+/// Carve `data` into an IVF header descriptor + a small number of frame
+/// descriptors and exercise the IVF writer. The invariant: when
+/// `write_all` returns Ok, `parse_all` reproduces the inputs exactly;
+/// when individual `write_frame` calls error (only on a payload
+/// exceeding the u32 envelope, unreachable in this harness given the
+/// bounded fuzz input), the output buffer is untouched.
+fn ivf_writer_roundtrip(data: &[u8]) {
+    // Need at least 24 bytes of "shape" data to fill one IvfHeader.
+    if data.len() < 24 {
+        return;
+    }
+    let header = IvfHeader {
+        fourcc: [data[0], data[1], data[2], data[3]],
+        width: u16::from_le_bytes([data[4], data[5]]),
+        height: u16::from_le_bytes([data[6], data[7]]),
+        framerate_num: u32::from_le_bytes([data[8], data[9], data[10], data[11]]),
+        framerate_den: u32::from_le_bytes([data[12], data[13], data[14], data[15]]),
+        frame_count: u32::from_le_bytes([data[16], data[17], data[18], data[19]]),
+    };
+
+    // Pull a small number of frames out of the tail of `data`. Each
+    // frame uses 1 size byte + that many payload bytes + 8 timestamp
+    // bytes. Cap at 16 frames so the harness stays fast.
+    let mut cursor = 24usize;
+    let mut payloads: Vec<Vec<u8>> = Vec::new();
+    let mut timestamps: Vec<u64> = Vec::new();
+    for _ in 0..16 {
+        if cursor + 9 > data.len() {
+            break;
+        }
+        let plen = data[cursor] as usize; // 0..=255
+        cursor += 1;
+        if cursor + 8 + plen > data.len() {
+            break;
+        }
+        let ts = u64::from_le_bytes([
+            data[cursor],
+            data[cursor + 1],
+            data[cursor + 2],
+            data[cursor + 3],
+            data[cursor + 4],
+            data[cursor + 5],
+            data[cursor + 6],
+            data[cursor + 7],
+        ]);
+        cursor += 8;
+        payloads.push(data[cursor..cursor + plen].to_vec());
+        timestamps.push(ts);
+        cursor += plen;
+    }
+    let frames: Vec<(u64, &[u8])> = timestamps
+        .iter()
+        .zip(payloads.iter())
+        .map(|(t, p)| (*t, p.as_slice()))
+        .collect();
+
+    // write_all path.
+    let buf = write_all(header, &frames).expect("payloads are at most 255 bytes");
+    let (parsed_h, parsed_frames) =
+        parse_all(&buf).expect("write_all output is a valid IVF stream");
+    assert_eq!(parsed_h, header, "ivf header round-trip");
+    assert_eq!(parsed_frames.len(), frames.len(), "ivf frame count");
+    for (got, want) in parsed_frames.iter().zip(frames.iter()) {
+        assert_eq!(got.timestamp, want.0);
+        assert_eq!(got.payload, want.1);
+    }
+
+    // write_header + write_frame incremental path: rebuild the same
+    // bytes and assert byte-for-byte equality with the write_all output.
+    let mut incremental = Vec::new();
+    let (hstart, hend) = write_header(&mut incremental, header);
+    assert_eq!(hstart, 0);
+    assert_eq!(hend, IVF_HEADER_LEN);
+    for &(ts, payload) in &frames {
+        let (_, fend) = write_frame(&mut incremental, ts, payload).expect("legal payload");
+        // The byte at fend - payload.len() - 8 holds the timestamp's
+        // first byte; nothing to assert beyond the buffer length here
+        // (parse_all on the joined output will check the rest).
+        assert_eq!(fend, incremental.len());
+        let _ = IVF_FRAME_HEADER_LEN; // touch the constant so an
+                                      // unused-import lint never lands
+                                      // on the helper.
+    }
+    assert_eq!(
+        incremental, buf,
+        "incremental write_header+write_frame equals write_all"
+    );
 }

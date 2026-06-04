@@ -72,7 +72,7 @@ src/
 ├── vc1.rs           # VC-1 sequence + entry-point + picture header
 ├── vp8.rs           # VP8 keyframe header + IVF demuxer
 ├── vp9.rs           # VP9 uncompressed header
-├── ivf.rs           # IVF frame demuxer (VP8 / VP9 / AV1 fixtures)
+├── ivf.rs           # IVF demuxer + muxer (VP8 / VP9 / AV1 fixtures)
 └── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame headers
 ```
 

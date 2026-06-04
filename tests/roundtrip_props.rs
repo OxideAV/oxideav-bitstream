@@ -30,6 +30,10 @@ use oxideav_bitstream::h266::{
     parse_picture_header, parse_picture_header_with_sps, VvcSps, NAL_TYPE_PH,
     PH_PIC_PARAMETER_SET_ID_MAX, SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
 };
+use oxideav_bitstream::ivf::{
+    parse_all, parse_frame, parse_header, write_all, write_frame, write_header, IvfHeader,
+    IVF_FOURCC_VP80, IVF_FOURCC_VP90, IVF_FRAME_HEADER_LEN, IVF_HEADER_LEN,
+};
 use oxideav_bitstream::nal::{ebsp_to_rbsp, rbsp_to_ebsp};
 use oxideav_bitstream::BitstreamError;
 
@@ -1222,4 +1226,213 @@ fn nal_codec_module_reexports_share_identity() {
     assert_eq!(oxideav_bitstream::h264::ebsp_to_rbsp(&ebsp), want);
     assert_eq!(oxideav_bitstream::hevc::ebsp_to_rbsp(&ebsp), want);
     assert_eq!(oxideav_bitstream::h266::ebsp_to_rbsp(&ebsp), want);
+}
+
+/// IVF `write_header` is an exact inverse of `parse_header` across a
+/// randomised sweep of legal `IvfHeader` field values. We seed the LCG
+/// once, then drive 5000 iterations covering every u16 / u32 width on
+/// the fields, plus a four-element FourCC enumeration that includes
+/// the two project-exported constants and two synthetic FourCCs.
+#[test]
+fn ivf_write_header_round_trips_through_parse_header_randomised() {
+    let mut rng = Lcg::new(0xc0ffee_deadbeefu64);
+    let fourccs = [IVF_FOURCC_VP80, IVF_FOURCC_VP90, *b"AV01", *b"XYZW"];
+    for i in 0..5000 {
+        let header = IvfHeader {
+            fourcc: fourccs[i % fourccs.len()],
+            width: rng.next_u32() as u16,
+            height: rng.next_u32() as u16,
+            framerate_num: rng.next_u32(),
+            framerate_den: rng.next_u32(),
+            frame_count: rng.next_u32(),
+        };
+        let mut out = Vec::new();
+        let (start, end) = write_header(&mut out, header);
+        assert_eq!(start, 0);
+        assert_eq!(end, IVF_HEADER_LEN);
+        let (got, rest) = parse_header(&out).expect("write_header output parses");
+        assert_eq!(got, header, "header round-trip mismatch on iter {i}");
+        assert!(
+            rest.is_empty(),
+            "lone-header output has no per-frame remainder"
+        );
+    }
+}
+
+/// `write_frame` and `parse_frame` are exact inverses on a randomised
+/// sweep of payload sizes from 0 up to 4096 bytes (covers every byte
+/// length the per-frame `size` decoder is likely to see on a typical
+/// VP8 / VP9 / AV1 fixture).
+#[test]
+fn ivf_write_frame_round_trips_through_parse_frame_randomised() {
+    let mut rng = Lcg::new(0x1234_5678_9abc_def0u64);
+    for i in 0..2000 {
+        // Payload size in 0..=4096 with a small bias to the short end.
+        let size = (rng.next_u32() % 4097) as usize;
+        let mut payload = vec![0u8; size];
+        for byte in payload.iter_mut() {
+            *byte = rng.next_u32() as u8;
+        }
+        let timestamp = rng.next_u64();
+
+        let mut out = Vec::new();
+        let (start, end) = write_frame(&mut out, timestamp, &payload).expect("legal payload size");
+        assert_eq!(start, 0);
+        assert_eq!(end, IVF_FRAME_HEADER_LEN + payload.len());
+
+        let (frame, rest) = parse_frame(&out)
+            .expect("write_frame output parses")
+            .unwrap();
+        assert_eq!(
+            frame.timestamp, timestamp,
+            "frame timestamp round-trip on iter {i}"
+        );
+        assert_eq!(
+            frame.payload, payload,
+            "frame payload round-trip on iter {i}"
+        );
+        assert!(rest.is_empty(), "no remainder after a single frame");
+    }
+}
+
+/// `write_all` ↔ `parse_all` is total on a multi-frame stream with a
+/// mix of legal frame sizes. The asserted invariant: the parsed
+/// (timestamp, payload) tuples line up byte-for-byte with the inputs,
+/// and the buffer length is exactly the documented sum.
+#[test]
+fn ivf_write_all_round_trips_through_parse_all_multi_frame() {
+    let mut rng = Lcg::new(0xfeed_face_0000_0001u64);
+    for stream_i in 0..200 {
+        let header = IvfHeader {
+            fourcc: IVF_FOURCC_VP90,
+            width: rng.next_u32() as u16,
+            height: rng.next_u32() as u16,
+            framerate_num: rng.next_u32(),
+            framerate_den: rng.next_u32(),
+            frame_count: rng.next_u32(),
+        };
+        let n_frames = (rng.next_u32() % 17) as usize; // 0..=16
+        let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(n_frames);
+        let mut timestamps: Vec<u64> = Vec::with_capacity(n_frames);
+        for _ in 0..n_frames {
+            let len = (rng.next_u32() % 256) as usize;
+            let mut p = vec![0u8; len];
+            for b in p.iter_mut() {
+                *b = rng.next_u32() as u8;
+            }
+            payloads.push(p);
+            timestamps.push(rng.next_u64());
+        }
+        let frames: Vec<(u64, &[u8])> = timestamps
+            .iter()
+            .zip(payloads.iter())
+            .map(|(t, p)| (*t, p.as_slice()))
+            .collect();
+
+        let buf = write_all(header, &frames).expect("legal frame sizes");
+        let expected_len: usize = IVF_HEADER_LEN
+            + frames
+                .iter()
+                .map(|(_, p)| IVF_FRAME_HEADER_LEN + p.len())
+                .sum::<usize>();
+        assert_eq!(
+            buf.len(),
+            expected_len,
+            "byte-length matches the header + per-frame sum"
+        );
+
+        let (parsed_h, parsed_frames) = parse_all(&buf).expect("write_all output parses");
+        assert_eq!(parsed_h, header, "header round-trip on stream {stream_i}");
+        assert_eq!(
+            parsed_frames.len(),
+            frames.len(),
+            "frame count on stream {stream_i}"
+        );
+        for (i, (got, want)) in parsed_frames.iter().zip(frames.iter()).enumerate() {
+            assert_eq!(
+                got.timestamp, want.0,
+                "frame {i} timestamp on stream {stream_i}"
+            );
+            assert_eq!(
+                got.payload, want.1,
+                "frame {i} payload on stream {stream_i}"
+            );
+        }
+    }
+}
+
+/// Mixing a hand-written prefix and `write_header` / `write_frame` calls
+/// preserves byte ranges so downstream consumers can locate every
+/// header / frame inside a larger byte vector. The `(start, end)` tuple
+/// the writer returns is the byte range covering the appended block.
+#[test]
+fn ivf_writer_returned_ranges_locate_appended_blocks() {
+    let mut rng = Lcg::new(0xabad_cafe_1337_4242u64);
+    for _ in 0..200 {
+        let prefix_len = (rng.next_u32() % 16) as usize;
+        let mut buf: Vec<u8> = (0..prefix_len).map(|i| (i & 0xff) as u8).collect();
+        let prefix_snapshot = buf.clone();
+        let header = IvfHeader {
+            fourcc: IVF_FOURCC_VP80,
+            width: 320,
+            height: 240,
+            framerate_num: 1,
+            framerate_den: 1,
+            frame_count: 0,
+        };
+        let (hstart, hend) = write_header(&mut buf, header);
+        assert_eq!(hstart, prefix_len);
+        assert_eq!(hend, prefix_len + IVF_HEADER_LEN);
+        assert_eq!(&buf[..prefix_len], prefix_snapshot.as_slice());
+
+        // Append a frame; check the returned range too.
+        let payload: Vec<u8> = (0..rng.next_u32() % 64).map(|i| (i & 0xff) as u8).collect();
+        let ts = rng.next_u64();
+        let (fstart, fend) = write_frame(&mut buf, ts, &payload).unwrap();
+        assert_eq!(fstart, hend);
+        assert_eq!(fend, hend + IVF_FRAME_HEADER_LEN + payload.len());
+
+        // Parsing back at hstart yields the original (header, frames).
+        let (parsed_h, frames) = parse_all(&buf[hstart..]).unwrap();
+        assert_eq!(parsed_h, header);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].timestamp, ts);
+        assert_eq!(frames[0].payload, payload.as_slice());
+    }
+}
+
+/// Ensure the writer's fixed bytes (DKIF magic, version=0, header_len=32,
+/// reserved tail) match the reader's strict checks. A drift on any of
+/// these would cause `parse_header` to reject `write_header`'s output —
+/// the exact-inverse property already covered above is the operational
+/// check, but pinning the magic-byte layout to the bytes the reader
+/// hard-codes catches a one-sided edit before the round-trip would.
+#[test]
+fn ivf_write_header_emits_fixed_bytes_reader_demands() {
+    let header = IvfHeader {
+        fourcc: *b"FOUR",
+        width: 1,
+        height: 2,
+        framerate_num: 3,
+        framerate_den: 4,
+        frame_count: 5,
+    };
+    let mut out = Vec::new();
+    write_header(&mut out, header);
+    assert_eq!(&out[0..4], b"DKIF", "DKIF magic");
+    assert_eq!(
+        u16::from_le_bytes([out[4], out[5]]),
+        0,
+        "version field is zero"
+    );
+    assert_eq!(
+        u16::from_le_bytes([out[6], out[7]]),
+        IVF_HEADER_LEN as u16,
+        "header_len field equals the documented constant"
+    );
+    assert_eq!(
+        &out[28..32],
+        &[0u8; 4],
+        "reserved tail is zeroed (documented unused bytes)"
+    );
 }
