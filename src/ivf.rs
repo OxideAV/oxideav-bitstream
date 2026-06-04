@@ -1,6 +1,6 @@
 //! Tiny IVF demuxer and muxer shared by the VP8 and VP9 modules.
 //!
-//! IVF is the container ffmpeg / libvpx use for raw VP8 / VP9
+//! IVF is a thin container used for raw VP8 / VP9
 //! elementary streams when no other container is needed:
 //!
 //! - 32-byte global header:
@@ -17,7 +17,7 @@
 //! - per frame: 12-byte header (LE u32 size + LE u64 timestamp)
 //!   followed by the frame payload bytes.
 //!
-//! There is no spec PDF for IVF — it is a libvpx-historical container
+//! There is no spec PDF for IVF — it is a thin historical container
 //! format whose layout is publicly documented in many places
 //! (Wikipedia, Matroska wiki, etc.). This module is a clean
 //! reimplementation.
