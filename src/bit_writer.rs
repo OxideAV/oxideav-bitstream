@@ -230,6 +230,26 @@ impl BitWriter {
         }
     }
 
+    /// Append the `rbsp_trailing_bits()` marker — H.264 §7.3.2.11 /
+    /// H.265 §7.3.2.11 / H.266 §7.3.10. Writes a single
+    /// `rbsp_stop_one_bit` (= 1) and then enough `alignment_zero_bit`
+    /// values to push the bit cursor to the next byte boundary.
+    ///
+    /// This is the exact inverse of
+    /// [`BitReader::read_rbsp_trailing_bits`](crate::bit_reader::BitReader::read_rbsp_trailing_bits):
+    /// a writer that finishes an RBSP with this call produces bytes
+    /// that the reader's marker check accepts. The number of trailing
+    /// zeros depends on the current bit position — between 0 (the
+    /// stop-one-bit alone) and 7 (when the writer was already at a
+    /// byte boundary, leaving a full zero-padded byte after the stop
+    /// bit).
+    pub fn write_rbsp_trailing_bits(&mut self) {
+        self.write_bit(1);
+        while !self.byte_aligned() {
+            self.write_bit(0);
+        }
+    }
+
     /// Consume the writer and return the accumulated bytes. The final
     /// byte's unused low bits (if the bit count is not a multiple of 8)
     /// are zero.
@@ -392,5 +412,48 @@ mod tests {
         let mut w = BitWriter::new();
         w.write_bits(0b101, 3);
         assert!(w.write_bytes(&[0xff]).is_err());
+    }
+
+    #[test]
+    fn write_rbsp_trailing_bits_from_byte_boundary_emits_0x80() {
+        // No prior payload bits -> stop bit is the MSB of a fresh byte
+        // and seven alignment zeros follow.
+        let mut w = BitWriter::new();
+        w.write_rbsp_trailing_bits();
+        assert_eq!(w.finish(), vec![0x80]);
+    }
+
+    #[test]
+    fn write_rbsp_trailing_bits_then_reader_accepts_marker() {
+        // Walk every starting bit position 0..8 and verify the
+        // reader's read_rbsp_trailing_bits accepts what the writer
+        // just produced.
+        for prefix_bits in 0u32..8 {
+            let mut w = BitWriter::new();
+            if prefix_bits > 0 {
+                w.write_bits(0b1010_0110, prefix_bits);
+            }
+            w.write_rbsp_trailing_bits();
+            assert!(w.byte_aligned(), "writer not aligned after marker");
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            if prefix_bits > 0 {
+                let _ = r.u(prefix_bits);
+            }
+            r.read_rbsp_trailing_bits()
+                .expect("reader should accept writer's marker");
+            assert!(r.byte_aligned());
+            assert!(r.at_end(), "reader should be at end of stream");
+        }
+    }
+
+    #[test]
+    fn write_rbsp_trailing_bits_seven_payload_bits_then_one_stop_byte() {
+        // Seven 1-bits then the stop bit consume the whole first byte
+        // (1111111_1) and no padding byte is needed.
+        let mut w = BitWriter::new();
+        w.write_bits(0b111_1111, 7);
+        w.write_rbsp_trailing_bits();
+        assert_eq!(w.finish(), vec![0xff]);
     }
 }

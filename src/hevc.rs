@@ -767,6 +767,109 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
     out
 }
 
+// ─────────────────────────── Access unit delimiter ──────────────────────────
+
+/// Access unit delimiter RBSP — H.265 §7.3.2.5 / §7.4.3.5.
+///
+/// The AUD NAL (type 35) marks the boundary between access units and
+/// optionally narrows the set of `slice_type` values that may appear
+/// in the coded pictures of the access unit. `pic_type` is the only
+/// signalled field; everything else in the NAL is `rbsp_trailing_bits()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HevcAccessUnitDelimiter {
+    /// `pic_type` u(3) (§7.4.3.5 / Table 7-2). Conforming bitstreams
+    /// MUST use 0, 1 or 2 (I-only / P+I / B+P+I); values 3..=7 are
+    /// reserved for future use. Per the spec the decoder MUST accept
+    /// reserved values (`Decoders … shall ignore reserved values of
+    /// pic_type`) — this parser surfaces the raw 3-bit value
+    /// unchanged so callers can decide whether to act on conforming
+    /// values, log a warning, or treat reserved values as a
+    /// pass-through.
+    pub pic_type: u8,
+}
+
+/// `pic_type` is u(3) so the spec range is 0..=7 (§7.4.3.5).
+pub const HEVC_PIC_TYPE_MAX: u8 = 7;
+
+/// `pic_type` values defined by the current H.265 edition. Conforming
+/// bitstreams use only these; the writer accepts the full u(3) range
+/// (reserved values are explicitly permitted on the decoder side, so
+/// emitting one is well-defined even if not "conforming").
+pub const HEVC_PIC_TYPE_I_ONLY: u8 = 0;
+pub const HEVC_PIC_TYPE_P_OR_I: u8 = 1;
+pub const HEVC_PIC_TYPE_B_P_OR_I: u8 = 2;
+
+/// Parse an AUD NAL — including the two-byte NAL header — recovering
+/// `pic_type` and verifying the trailing `rbsp_trailing_bits()`
+/// marker (§7.3.2.5).
+///
+/// Returns [`BitstreamError::InvalidData`] when the NAL type isn't
+/// [`NAL_TYPE_AUD`] or when the trailing marker is malformed; returns
+/// [`BitstreamError::UnexpectedEnd`] when the NAL is too short for
+/// the two-byte header plus a payload byte. Reserved `pic_type`
+/// values (3..=7) are returned verbatim rather than rejected — the
+/// spec explicitly mandates decoders accept them.
+pub fn parse_aud_nal(nal: &[u8]) -> Result<HevcAccessUnitDelimiter, BitstreamError> {
+    if nal.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "AUD NAL needs at least the 2-byte header",
+        ));
+    }
+    let (_, nal_type, _, _) = nal_header(nal[0], nal[1]);
+    if nal_type != NAL_TYPE_AUD {
+        return Err(BitstreamError::invalid(format!(
+            "expected AUD NAL (type=35), got type={nal_type}"
+        )));
+    }
+    if nal.len() < 3 {
+        return Err(BitstreamError::unexpected_end(
+            "AUD NAL has no body after the 2-byte header",
+        ));
+    }
+    let rbsp = ebsp_to_rbsp(&nal[2..]);
+    let mut r = BitReader::new(&rbsp);
+    let pic_type = r.u(3) as u8;
+    r.read_rbsp_trailing_bits()?;
+    Ok(HevcAccessUnitDelimiter { pic_type })
+}
+
+/// Emit an AUD NAL — two-byte NAL header followed by a 1-byte RBSP
+/// that packs `pic_type` u(3) and the `rbsp_trailing_bits()` marker.
+///
+/// The NAL header fixes `forbidden_zero_bit = 0`, `nuh_layer_id = 0`
+/// and `nuh_temporal_id_plus1 = 1` (the canonical base-layer / TID-0
+/// choice every conforming encoder uses for AUD NALs). The returned
+/// bytes start with the two-byte NAL header; callers that need an
+/// Annex-B unit prepend `0x00 0x00 0x01` (or `0x00 0x00 0x00 0x01`)
+/// themselves.
+///
+/// Returns [`BitstreamError::InvalidData`] when `pic_type > 7` (the
+/// u(3) envelope). Reserved `pic_type` values (3..=7) are accepted so
+/// the writer round-trips against the parser's permissive
+/// reserved-value contract.
+pub fn write_aud_nal(aud: &HevcAccessUnitDelimiter) -> Result<Vec<u8>, BitstreamError> {
+    if aud.pic_type > HEVC_PIC_TYPE_MAX {
+        return Err(BitstreamError::invalid(format!(
+            "HEVC pic_type = {} > {} (u(3) envelope)",
+            aud.pic_type, HEVC_PIC_TYPE_MAX
+        )));
+    }
+    // forbidden_zero=0, nal_unit_type=35, layer_id=0, tid_plus1=1
+    let b0: u8 = NAL_TYPE_AUD << 1; // upper bits already zero, layer_id bit5 = 0
+    let b1: u8 = 0x01; // layer_id low5 = 0, tid_plus1 = 1
+    let mut bw = crate::bit_writer::BitWriter::new();
+    bw.write_bits(aud.pic_type as u32, 3);
+    bw.write_rbsp_trailing_bits();
+    let rbsp = bw.finish();
+    // A 1-byte RBSP cannot contain the 0x00 0x00 0x0{0..3} triple the
+    // encapsulation rule guards against, so the EBSP equals the RBSP.
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(b0);
+    out.push(b1);
+    out.extend_from_slice(&rbsp);
+    Ok(out)
+}
+
 // ─────────────────────────── Tests ───────────────────────────────────────────
 
 #[cfg(test)]
@@ -800,5 +903,88 @@ mod tests {
         let ebsp = [0x00, 0x00, 0x03, 0x01];
         let rbsp = ebsp_to_rbsp(&ebsp);
         assert_eq!(rbsp, &[0x00, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn aud_write_then_parse_roundtrips_every_pic_type() {
+        for pt in 0u8..=HEVC_PIC_TYPE_MAX {
+            let in_ = HevcAccessUnitDelimiter { pic_type: pt };
+            let bytes = write_aud_nal(&in_).expect("AUD NAL writes");
+            let parsed = parse_aud_nal(&bytes).expect("AUD NAL parses");
+            assert_eq!(parsed, in_, "round-trip pic_type={pt}");
+        }
+    }
+
+    #[test]
+    fn aud_writer_canonical_layer0_tid0() {
+        // NAL header: type=35 -> 0x46, layer=0/tid+1=1 -> 0x01.
+        // RBSP for pic_type=0: 000 + 1 + 0000 = 0x10.
+        let bytes = write_aud_nal(&HevcAccessUnitDelimiter { pic_type: 0 }).unwrap();
+        assert_eq!(bytes, vec![0x46, 0x01, 0x10]);
+    }
+
+    #[test]
+    fn aud_writer_pic_type_2_canonical_bytes() {
+        // pic_type=2 (010) + stop-one (1) + four alignment zeros = 0x50.
+        let bytes = write_aud_nal(&HevcAccessUnitDelimiter {
+            pic_type: HEVC_PIC_TYPE_B_P_OR_I,
+        })
+        .unwrap();
+        assert_eq!(bytes, vec![0x46, 0x01, 0x50]);
+    }
+
+    #[test]
+    fn aud_parser_accepts_reserved_pic_type() {
+        // The spec mandates decoders accept reserved (3..=7) pic_type
+        // values. Round-trip both ends and confirm the value is
+        // surfaced unchanged.
+        for pt in 3u8..=7 {
+            let bytes = write_aud_nal(&HevcAccessUnitDelimiter { pic_type: pt }).unwrap();
+            let parsed = parse_aud_nal(&bytes).unwrap();
+            assert_eq!(parsed.pic_type, pt);
+        }
+    }
+
+    #[test]
+    fn aud_writer_rejects_out_of_range_pic_type() {
+        let err = write_aud_nal(&HevcAccessUnitDelimiter { pic_type: 8 })
+            .expect_err("pic_type=8 outside u(3) envelope");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_wrong_nal_type() {
+        // VPS NAL header (type=32) where AUD was expected.
+        let nal = [0x40u8, 0x01, 0x10];
+        let err = parse_aud_nal(&nal).expect_err("wrong nal type rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_header_only_nal() {
+        let nal = [0x46u8, 0x01];
+        let err = parse_aud_nal(&nal).expect_err("header-only NAL rejected");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_truncated_input() {
+        let err = parse_aud_nal(&[0x46u8]).expect_err("1-byte NAL rejected");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_missing_stop_bit() {
+        // pic_type bits followed by all-zero padding -> reader sees
+        // no rbsp_stop_one_bit and rejects.
+        let nal = [0x46u8, 0x01, 0x00];
+        let err = parse_aud_nal(&nal).expect_err("missing stop bit rejected");
+        assert!(
+            matches!(
+                err,
+                BitstreamError::InvalidData(_) | BitstreamError::UnexpectedEnd(_)
+            ),
+            "got: {err:?}"
+        );
     }
 }

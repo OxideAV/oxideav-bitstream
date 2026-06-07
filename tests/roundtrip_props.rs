@@ -26,9 +26,18 @@ use oxideav_bitstream::av1::{
 };
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
+use oxideav_bitstream::h264::{
+    parse_aud_nal as h264_parse_aud_nal, write_aud_nal as h264_write_aud_nal,
+    H264AccessUnitDelimiter, H264_PRIMARY_PIC_TYPE_MAX,
+};
 use oxideav_bitstream::h266::{
-    parse_picture_header, parse_picture_header_with_sps, VvcSps, NAL_TYPE_PH,
-    PH_PIC_PARAMETER_SET_ID_MAX, SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
+    parse_aud, parse_picture_header, parse_picture_header_with_sps, write_aud,
+    VvcAccessUnitDelimiter, VvcSps, AUD_PIC_TYPE_MAX, NAL_TYPE_PH, PH_PIC_PARAMETER_SET_ID_MAX,
+    SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
+};
+use oxideav_bitstream::hevc::{
+    parse_aud_nal as hevc_parse_aud_nal, write_aud_nal as hevc_write_aud_nal,
+    HevcAccessUnitDelimiter, HEVC_PIC_TYPE_MAX,
 };
 use oxideav_bitstream::ivf::{
     parse_all, parse_frame, parse_header, write_all, write_frame, write_header, IvfHeader,
@@ -1434,5 +1443,157 @@ fn ivf_write_header_emits_fixed_bytes_reader_demands() {
         &out[28..32],
         &[0u8; 4],
         "reserved tail is zeroed (documented unused bytes)"
+    );
+}
+
+// ─────────────────────────── AUD round-trip invariants ──────────────────────
+
+/// H.264 AUD: every legal `primary_pic_type` value (0..=7) round-trips
+/// through `write_aud_nal` -> `parse_aud_nal` byte-identically. The
+/// emitted bytes are a known 2-byte sequence (header byte 0x09 + one
+/// payload byte) so we also pin the encoded byte count.
+#[test]
+fn h264_aud_roundtrips_every_pic_type() {
+    for pt in 0u8..=H264_PRIMARY_PIC_TYPE_MAX {
+        let in_ = H264AccessUnitDelimiter {
+            primary_pic_type: pt,
+        };
+        let bytes = h264_write_aud_nal(&in_).expect("h264 AUD writes");
+        assert_eq!(bytes.len(), 2, "h264 AUD is 2 bytes");
+        assert_eq!(bytes[0], 0x09, "header byte is nal_unit_type=9");
+        let parsed = h264_parse_aud_nal(&bytes).expect("h264 AUD parses");
+        assert_eq!(parsed, in_, "h264 AUD round-trip pic_type={pt}");
+    }
+}
+
+/// H.264 AUD: out-of-range `primary_pic_type` values (8..=255) are
+/// rejected as `InvalidData` rather than silently truncated to the
+/// low three bits — a silent-truncation bug would round-trip as a
+/// different conforming value and never get caught.
+#[test]
+fn h264_aud_rejects_oversized_pic_type() {
+    for pt in (H264_PRIMARY_PIC_TYPE_MAX + 1)..=255 {
+        let err = h264_write_aud_nal(&H264AccessUnitDelimiter {
+            primary_pic_type: pt,
+        })
+        .expect_err("oversized pic_type rejected");
+        assert!(matches!(
+            err,
+            oxideav_bitstream::BitstreamError::InvalidData(_)
+        ));
+    }
+}
+
+/// HEVC AUD: every value across the full u(3) range (including
+/// reserved 3..=7 which decoders MUST accept) round-trips
+/// byte-identically through `write_aud_nal` -> `parse_aud_nal`. The
+/// encoded form is a known 3-byte sequence (two-byte NAL header
+/// 0x46 0x01 plus one payload byte) so we also pin the byte count.
+#[test]
+fn hevc_aud_roundtrips_every_pic_type() {
+    for pt in 0u8..=HEVC_PIC_TYPE_MAX {
+        let in_ = HevcAccessUnitDelimiter { pic_type: pt };
+        let bytes = hevc_write_aud_nal(&in_).expect("hevc AUD writes");
+        assert_eq!(bytes.len(), 3, "hevc AUD is 3 bytes");
+        assert_eq!(bytes[0], 0x46, "header byte0: nal_unit_type=35");
+        assert_eq!(bytes[1], 0x01, "header byte1: layer=0 / tid_plus1=1");
+        let parsed = hevc_parse_aud_nal(&bytes).expect("hevc AUD parses");
+        assert_eq!(parsed, in_, "hevc AUD round-trip pic_type={pt}");
+    }
+}
+
+#[test]
+fn hevc_aud_rejects_oversized_pic_type() {
+    for pt in (HEVC_PIC_TYPE_MAX + 1)..=255 {
+        let err = hevc_write_aud_nal(&HevcAccessUnitDelimiter { pic_type: pt })
+            .expect_err("oversized pic_type rejected");
+        assert!(matches!(
+            err,
+            oxideav_bitstream::BitstreamError::InvalidData(_)
+        ));
+    }
+}
+
+/// H.266 AUD: every (`aud_irap_or_gdr_flag`, `aud_pic_type`)
+/// combination across `{0,1} × 0..=7` round-trips byte-identically.
+/// The full u(3) range is covered (including reserved values that
+/// decoders MUST accept). The encoded form is a known 3-byte
+/// sequence: NAL header 0x00 0xA1 plus a one-byte payload.
+#[test]
+fn h266_aud_roundtrips_every_combination() {
+    for irap in 0u8..=1 {
+        for pt in 0u8..=AUD_PIC_TYPE_MAX {
+            let in_ = VvcAccessUnitDelimiter {
+                aud_irap_or_gdr_flag: irap,
+                aud_pic_type: pt,
+            };
+            let bytes = write_aud(&in_).expect("h266 AUD writes");
+            assert_eq!(bytes.len(), 3, "h266 AUD is 3 bytes");
+            assert_eq!(bytes[0], 0x00, "header byte0: forbidden+reserved+layer=0");
+            assert_eq!(bytes[1], 0xA1, "header byte1: type=20 / tid_plus1=1");
+            let parsed = parse_aud(&bytes).expect("h266 AUD parses");
+            assert_eq!(parsed, in_, "h266 AUD round-trip irap={irap} pt={pt}");
+        }
+    }
+}
+
+#[test]
+fn h266_aud_rejects_oversized_fields() {
+    // Out-of-range irap flag.
+    for bad_irap in 2u8..=255 {
+        let err = write_aud(&VvcAccessUnitDelimiter {
+            aud_irap_or_gdr_flag: bad_irap,
+            aud_pic_type: 0,
+        })
+        .expect_err("oversized irap flag rejected");
+        assert!(matches!(
+            err,
+            oxideav_bitstream::BitstreamError::InvalidData(_)
+        ));
+    }
+    // Out-of-range pic_type.
+    for bad_pt in (AUD_PIC_TYPE_MAX + 1)..=255 {
+        let err = write_aud(&VvcAccessUnitDelimiter {
+            aud_irap_or_gdr_flag: 0,
+            aud_pic_type: bad_pt,
+        })
+        .expect_err("oversized aud_pic_type rejected");
+        assert!(matches!(
+            err,
+            oxideav_bitstream::BitstreamError::InvalidData(_)
+        ));
+    }
+}
+
+/// Pinning the writer's byte layout independently of the parser
+/// catches one-sided drift. For each codec, the emitted bytes are
+/// fully determined by the input fields, so we hard-code the expected
+/// sequence for two representative inputs.
+#[test]
+fn aud_writers_emit_documented_byte_layout() {
+    // H.264, primary_pic_type=3 (011) + stop(1) + alignment 0000 ->
+    // 0b0111_0000 = 0x70.
+    assert_eq!(
+        h264_write_aud_nal(&H264AccessUnitDelimiter {
+            primary_pic_type: 3
+        })
+        .unwrap(),
+        vec![0x09, 0x70]
+    );
+    // HEVC, pic_type=1 (001) + stop(1) + alignment 0000 -> 0b0011_0000
+    // = 0x30.
+    assert_eq!(
+        hevc_write_aud_nal(&HevcAccessUnitDelimiter { pic_type: 1 }).unwrap(),
+        vec![0x46, 0x01, 0x30]
+    );
+    // H.266, irap=1, pic_type=1 (001) -> 1 001 1 000 = 0b1001_1000 =
+    // 0x98.
+    assert_eq!(
+        write_aud(&VvcAccessUnitDelimiter {
+            aud_irap_or_gdr_flag: 1,
+            aud_pic_type: 1
+        })
+        .unwrap(),
+        vec![0x00, 0xA1, 0x98]
     );
 }

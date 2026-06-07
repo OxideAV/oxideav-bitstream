@@ -588,6 +588,90 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
     out
 }
 
+// ─────────────────────────── Access unit delimiter ──────────────────────────
+
+/// Access unit delimiter RBSP — H.264 §7.3.2.4 / §7.4.2.4.
+///
+/// The AUD NAL (type 9) marks the boundary between access units and
+/// optionally narrows the set of `slice_type` values that may appear
+/// in the primary coded picture. `primary_pic_type` is the only
+/// signalled field; everything else in the NAL is `rbsp_trailing_bits()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct H264AccessUnitDelimiter {
+    /// `primary_pic_type` u(3) (§7.4.2.4 / Table 7-5). Spec range 0..=7.
+    pub primary_pic_type: u8,
+}
+
+/// `primary_pic_type` is u(3) so the spec range is 0..=7
+/// (§7.4.2.4 / Table 7-5).
+pub const H264_PRIMARY_PIC_TYPE_MAX: u8 = 7;
+
+/// Parse an AUD NAL — including the NAL header byte at index 0 —
+/// recovering `primary_pic_type` and verifying the trailing
+/// `rbsp_trailing_bits()` marker (§7.3.2.4).
+///
+/// Returns [`BitstreamError::InvalidData`] when the NAL type isn't
+/// [`NAL_TYPE_AUD`] or when the trailing marker is malformed; returns
+/// [`BitstreamError::UnexpectedEnd`] when the NAL is too short to
+/// carry a 3-bit pic-type field plus its byte-aligning marker.
+pub fn parse_aud_nal(nal: &[u8]) -> Result<H264AccessUnitDelimiter, BitstreamError> {
+    if nal.is_empty() {
+        return Err(BitstreamError::unexpected_end("empty AUD NAL"));
+    }
+    let (_, _, nal_type) = nal_header(nal[0]);
+    if nal_type != NAL_TYPE_AUD {
+        return Err(BitstreamError::invalid(format!(
+            "expected AUD NAL (type=9), got type={nal_type}"
+        )));
+    }
+    if nal.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "AUD NAL has no body after header byte",
+        ));
+    }
+    let rbsp = ebsp_to_rbsp(&nal[1..]);
+    let mut r = BitReader::new(&rbsp);
+    let primary_pic_type = r.u(3) as u8;
+    r.read_rbsp_trailing_bits()?;
+    Ok(H264AccessUnitDelimiter { primary_pic_type })
+}
+
+/// Emit an AUD NAL — header byte followed by a 1-byte RBSP that packs
+/// `primary_pic_type` u(3) and the `rbsp_trailing_bits()` marker. The
+/// `0x00 0x00 0x00` / `0x00 0x00 0x01` start-code triples can never
+/// appear inside a single-byte RBSP, so no emulation-prevention
+/// byte-stuffing is required.
+///
+/// The NAL header byte fixes `forbidden_zero_bit = 0` and
+/// `nal_ref_idc = 0` — the latter being the H.264 §7.4.1 requirement
+/// that any AUD NAL must have `nal_ref_idc = 0`. The returned bytes
+/// start with the NAL header byte; callers that need an Annex-B unit
+/// prepend `0x00 0x00 0x01` (or `0x00 0x00 0x00 0x01`) themselves.
+///
+/// Returns [`BitstreamError::InvalidData`] when
+/// `primary_pic_type > 7` (the u(3) envelope).
+pub fn write_aud_nal(aud: &H264AccessUnitDelimiter) -> Result<Vec<u8>, BitstreamError> {
+    if aud.primary_pic_type > H264_PRIMARY_PIC_TYPE_MAX {
+        return Err(BitstreamError::invalid(format!(
+            "H.264 primary_pic_type = {} > {} (u(3) envelope)",
+            aud.primary_pic_type, H264_PRIMARY_PIC_TYPE_MAX
+        )));
+    }
+    // NAL header: forbidden_zero=0, nal_ref_idc=0, nal_unit_type=9.
+    let nal_header_byte: u8 = NAL_TYPE_AUD; // upper bits already zero
+    let mut bw = crate::bit_writer::BitWriter::new();
+    bw.write_bits(aud.primary_pic_type as u32, 3);
+    bw.write_rbsp_trailing_bits();
+    let rbsp = bw.finish();
+    // Encapsulate: a 1-byte RBSP cannot trigger the 00-00-{00..03}
+    // pattern that emulation-prevention guards against, so the EBSP
+    // is byte-identical to the RBSP.
+    let mut out = Vec::with_capacity(1 + rbsp.len());
+    out.push(nal_header_byte);
+    out.extend_from_slice(&rbsp);
+    Ok(out)
+}
+
 // ─────────────────────────── Tests ───────────────────────────────────────────
 
 #[cfg(test)]
@@ -622,5 +706,85 @@ mod tests {
         assert_eq!(f, 0);
         assert_eq!(nri, 3);
         assert_eq!(t, NAL_TYPE_IDR);
+    }
+
+    #[test]
+    fn aud_write_then_parse_roundtrips_every_pic_type() {
+        for pt in 0u8..=H264_PRIMARY_PIC_TYPE_MAX {
+            let in_ = H264AccessUnitDelimiter {
+                primary_pic_type: pt,
+            };
+            let bytes = write_aud_nal(&in_).expect("AUD NAL writes");
+            let parsed = parse_aud_nal(&bytes).expect("AUD NAL parses");
+            assert_eq!(parsed, in_, "round-trip primary_pic_type={pt}");
+        }
+    }
+
+    #[test]
+    fn aud_write_pic_type_0_canonical_bytes() {
+        // pic_type=0 (000) followed by stop-one (1) + four zero
+        // alignment bits = 0b0001_0000 = 0x10. The NAL header byte
+        // for an AUD with nal_ref_idc=0 is 0x09.
+        let bytes = write_aud_nal(&H264AccessUnitDelimiter {
+            primary_pic_type: 0,
+        })
+        .unwrap();
+        assert_eq!(bytes, vec![0x09, 0x10]);
+    }
+
+    #[test]
+    fn aud_write_pic_type_7_canonical_bytes() {
+        // pic_type=7 (111) + stop-one (1) + four zero alignment bits
+        // = 0b1111_0000 = 0xF0.
+        let bytes = write_aud_nal(&H264AccessUnitDelimiter {
+            primary_pic_type: 7,
+        })
+        .unwrap();
+        assert_eq!(bytes, vec![0x09, 0xf0]);
+    }
+
+    #[test]
+    fn aud_writer_rejects_out_of_range_pic_type() {
+        let err = write_aud_nal(&H264AccessUnitDelimiter {
+            primary_pic_type: 8,
+        })
+        .expect_err("pic_type=8 is outside u(3) envelope");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_wrong_nal_type() {
+        // SPS NAL header byte where an AUD was expected.
+        let nal = [0x67u8, 0x10];
+        let err = parse_aud_nal(&nal).expect_err("wrong nal type rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_empty_input() {
+        let err = parse_aud_nal(&[]).expect_err("empty NAL rejected");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_header_only_nal() {
+        // NAL with only the header byte and no payload byte.
+        let err = parse_aud_nal(&[0x09u8]).expect_err("header-only NAL rejected");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_missing_stop_bit() {
+        // pic_type=0 (000) followed by all-zero alignment bits — no
+        // rbsp_stop_one_bit anywhere -> reader's marker check fails.
+        let nal = [0x09u8, 0x00];
+        let err = parse_aud_nal(&nal).expect_err("missing stop bit rejected");
+        assert!(
+            matches!(
+                err,
+                BitstreamError::InvalidData(_) | BitstreamError::UnexpectedEnd(_)
+            ),
+            "got: {err:?}"
+        );
     }
 }

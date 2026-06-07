@@ -1145,6 +1145,125 @@ pub fn parse_picture_header_with_sps(
     })
 }
 
+// ─────────────────────────── Access unit delimiter (7.3.2.10) ────────────────
+
+/// Access unit delimiter RBSP — H.266 §7.3.2.10 / §7.4.3.10.
+///
+/// The AUD NAL (type 20) marks the boundary between access units in
+/// non-multi-layer streams and is mandatory in multi-layer OLSs that
+/// contain only IRAP / GDR pictures. Two fields are signalled:
+///
+/// - `aud_irap_or_gdr_flag` u(1): 1 when the access unit is an IRAP
+///   or GDR access unit, 0 otherwise.
+/// - `aud_pic_type` u(3): conformance-restricted to 0 (I-only), 1
+///   (P+I) or 2 (B+P+I); 3..=7 are reserved-for-future-use and
+///   decoders MUST accept them per the spec's
+///   "Decoders … shall ignore reserved values" clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VvcAccessUnitDelimiter {
+    /// `aud_irap_or_gdr_flag` u(1) (§7.4.3.10). When 1 the access unit
+    /// contains only IRAP or GDR coded pictures.
+    pub aud_irap_or_gdr_flag: u8,
+    /// `aud_pic_type` u(3) (§7.4.3.10 / Table 7). Conforming
+    /// bitstreams use 0..=2; the parser surfaces reserved values
+    /// (3..=7) verbatim per the spec's must-accept-reserved contract.
+    pub aud_pic_type: u8,
+}
+
+/// `aud_pic_type` is u(3) so the spec range is 0..=7 (§7.4.3.10).
+pub const AUD_PIC_TYPE_MAX: u8 = 7;
+
+/// `aud_pic_type` values defined by the current H.266 edition. The
+/// writer accepts the full u(3) range so reserved values round-trip
+/// against the parser's accept-reserved contract.
+pub const AUD_PIC_TYPE_I_ONLY: u8 = 0;
+pub const AUD_PIC_TYPE_P_OR_I: u8 = 1;
+pub const AUD_PIC_TYPE_B_P_OR_I: u8 = 2;
+
+/// Strip the two-byte NAL header from an AUD NAL body and parse the
+/// `access_unit_delimiter_rbsp()` (§7.3.2.10) — `aud_irap_or_gdr_flag`
+/// u(1) + `aud_pic_type` u(3) + `rbsp_trailing_bits()`.
+///
+/// Returns [`BitstreamError::InvalidData`] when the NAL is not
+/// [`NAL_TYPE_AUD`] or when the trailing marker is malformed;
+/// returns [`BitstreamError::UnexpectedEnd`] when the NAL is too
+/// short for the two-byte header plus a payload byte. Reserved
+/// `aud_pic_type` values (3..=7) are returned verbatim per the
+/// "Decoders … shall ignore reserved values" clause.
+pub fn parse_aud(nal_body: &[u8]) -> Result<VvcAccessUnitDelimiter, BitstreamError> {
+    if nal_body.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "H.266 AUD NAL needs at least the 2-byte header",
+        ));
+    }
+    let header = parse_nal_header(nal_body)?;
+    if header.nal_unit_type != NAL_TYPE_AUD {
+        return Err(BitstreamError::invalid(format!(
+            "expected AUD NAL (type {}), got {}",
+            NAL_TYPE_AUD, header.nal_unit_type
+        )));
+    }
+    if nal_body.len() < 3 {
+        return Err(BitstreamError::unexpected_end(
+            "H.266 AUD NAL has no body after the 2-byte header",
+        ));
+    }
+    let rbsp = ebsp_to_rbsp(&nal_body[2..]);
+    let mut r = BitReader::new(&rbsp);
+    let aud_irap_or_gdr_flag = r.u(1) as u8;
+    let aud_pic_type = r.u(3) as u8;
+    r.read_rbsp_trailing_bits()?;
+    Ok(VvcAccessUnitDelimiter {
+        aud_irap_or_gdr_flag,
+        aud_pic_type,
+    })
+}
+
+/// Emit an AUD NAL — two-byte NAL header followed by a 1-byte RBSP
+/// that packs `aud_irap_or_gdr_flag` u(1), `aud_pic_type` u(3) and
+/// the `rbsp_trailing_bits()` marker (§7.3.2.10).
+///
+/// The NAL header fixes `forbidden_zero_bit = 0`,
+/// `nuh_reserved_zero_bit = 0`, `nuh_layer_id = 0` and
+/// `nuh_temporal_id_plus1 = 1` — the canonical base-layer / TID-0
+/// choice for AUD NALs. Reserved `aud_pic_type` values (3..=7) are
+/// accepted so the writer round-trips against the parser's
+/// accept-reserved contract.
+///
+/// Returns [`BitstreamError::InvalidData`] when `aud_irap_or_gdr_flag
+/// > 1` or `aud_pic_type > 7` (the u(1) / u(3) envelopes).
+pub fn write_aud(aud: &VvcAccessUnitDelimiter) -> Result<Vec<u8>, BitstreamError> {
+    if aud.aud_irap_or_gdr_flag > 1 {
+        return Err(BitstreamError::invalid(format!(
+            "aud_irap_or_gdr_flag = {} > 1 (u(1) envelope)",
+            aud.aud_irap_or_gdr_flag
+        )));
+    }
+    if aud.aud_pic_type > AUD_PIC_TYPE_MAX {
+        return Err(BitstreamError::invalid(format!(
+            "aud_pic_type = {} > {} (u(3) envelope)",
+            aud.aud_pic_type, AUD_PIC_TYPE_MAX
+        )));
+    }
+    // forbidden_zero=0, reserved_zero=0, layer_id=0 -> byte 0 = 0x00.
+    // nal_unit_type=20, tid_plus1=1 -> (20 << 3) | 1 = 0xA1.
+    let b0: u8 = 0;
+    let b1: u8 = (NAL_TYPE_AUD << 3) | 1;
+    let mut bw = crate::bit_writer::BitWriter::new();
+    bw.write_bits(aud.aud_irap_or_gdr_flag as u32, 1);
+    bw.write_bits(aud.aud_pic_type as u32, 3);
+    bw.write_rbsp_trailing_bits();
+    let rbsp = bw.finish();
+    // The 1-byte RBSP cannot contain the 0x00 0x00 0x0{0..3} triple
+    // the encapsulation rule guards against, so the EBSP equals the
+    // RBSP.
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(b0);
+    out.push(b1);
+    out.extend_from_slice(&rbsp);
+    Ok(out)
+}
+
 // ─────────────────────────── Tests ───────────────────────────────────────────
 
 #[cfg(test)]
@@ -2161,5 +2280,115 @@ mod tests {
         assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 4);
         assert_eq!(sps.poc_lsb_width(), 8);
         assert_eq!(sps.max_pic_order_cnt_lsb(), 256);
+    }
+
+    #[test]
+    fn aud_write_then_parse_roundtrips_every_combo() {
+        for irap in 0u8..=1 {
+            for pt in 0u8..=AUD_PIC_TYPE_MAX {
+                let in_ = VvcAccessUnitDelimiter {
+                    aud_irap_or_gdr_flag: irap,
+                    aud_pic_type: pt,
+                };
+                let bytes = write_aud(&in_).expect("AUD writes");
+                let parsed = parse_aud(&bytes).expect("AUD parses");
+                assert_eq!(parsed, in_, "round-trip irap={irap} pic_type={pt}");
+            }
+        }
+    }
+
+    #[test]
+    fn aud_writer_canonical_layer0_tid0() {
+        // header: 0x00 0xA1 (type=20 << 3 | tid_plus1=1).
+        // RBSP: irap=0 (1b) + pic_type=0 (3b) + stop-one (1b) + 3
+        // alignment zeros = 0b0000_1000 = 0x08.
+        let bytes = write_aud(&VvcAccessUnitDelimiter {
+            aud_irap_or_gdr_flag: 0,
+            aud_pic_type: 0,
+        })
+        .unwrap();
+        assert_eq!(bytes, vec![0x00, 0xA1, 0x08]);
+    }
+
+    #[test]
+    fn aud_writer_irap_pic_type_2_canonical_bytes() {
+        // irap=1 (1b) + pic_type=2 (010) + stop-one (1b) + 3 zeros =
+        // 0b1010_1000 = 0xA8.
+        let bytes = write_aud(&VvcAccessUnitDelimiter {
+            aud_irap_or_gdr_flag: 1,
+            aud_pic_type: AUD_PIC_TYPE_B_P_OR_I,
+        })
+        .unwrap();
+        assert_eq!(bytes, vec![0x00, 0xA1, 0xA8]);
+    }
+
+    #[test]
+    fn aud_parser_accepts_reserved_pic_type() {
+        // Spec mandates decoders accept reserved (3..=7) aud_pic_type
+        // values; round-trip both ends to confirm the value surfaces
+        // unchanged.
+        for pt in 3u8..=7 {
+            let bytes = write_aud(&VvcAccessUnitDelimiter {
+                aud_irap_or_gdr_flag: 0,
+                aud_pic_type: pt,
+            })
+            .unwrap();
+            let parsed = parse_aud(&bytes).unwrap();
+            assert_eq!(parsed.aud_pic_type, pt);
+        }
+    }
+
+    #[test]
+    fn aud_writer_rejects_out_of_range_fields() {
+        assert!(matches!(
+            write_aud(&VvcAccessUnitDelimiter {
+                aud_irap_or_gdr_flag: 2,
+                aud_pic_type: 0
+            }),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        assert!(matches!(
+            write_aud(&VvcAccessUnitDelimiter {
+                aud_irap_or_gdr_flag: 0,
+                aud_pic_type: 8
+            }),
+            Err(BitstreamError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn aud_parser_rejects_wrong_nal_type() {
+        // SPS NAL header (type=15 -> (15<<3)|1 = 0x79).
+        let nal = [0x00u8, 0x79, 0x10];
+        let err = parse_aud(&nal).expect_err("wrong nal type rejected");
+        assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_truncated_input() {
+        let err = parse_aud(&[0x00u8]).expect_err("1-byte input rejected");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_header_only_nal() {
+        // header byte for AUD but no body.
+        let err = parse_aud(&[0x00u8, 0xA1]).expect_err("header-only NAL rejected");
+        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn aud_parser_rejects_missing_stop_bit() {
+        // Header + an all-zero body byte: reader finds no stop-one
+        // bit during rbsp_trailing_bits.
+        let nal = [0x00u8, 0xA1, 0x00];
+        let err = parse_aud(&nal).expect_err("missing stop bit rejected");
+        assert!(
+            matches!(
+                err,
+                BitstreamError::InvalidData(_) | BitstreamError::UnexpectedEnd(_)
+            ),
+            "got: {err:?}"
+        );
     }
 }

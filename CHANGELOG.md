@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Access unit delimiter (AUD) parse + write for H.264, HEVC and H.266.
+  Each codec module now exposes a public NAL-level entry point and its
+  inverse:
+  - `h264::parse_aud_nal` / `h264::write_aud_nal` (§7.3.2.4 /
+    §7.4.2.4): surfaces the 3-bit `primary_pic_type` and verifies the
+    `rbsp_trailing_bits()` marker. The writer accepts the full u(3)
+    envelope (0..=7) and rejects oversized values as
+    [`BitstreamError::InvalidData`]. Constant
+    `H264_PRIMARY_PIC_TYPE_MAX = 7` documents the envelope.
+  - `hevc::parse_aud_nal` / `hevc::write_aud_nal` (§7.3.2.5 /
+    §7.4.3.5): surfaces the 3-bit `pic_type` field on a
+    two-byte-NAL-header AUD. Per the H.265 spec's
+    "Decoders … shall ignore reserved values" clause, the parser
+    accepts the full u(3) range (0..=7) — including the reserved
+    values 3..=7 — and returns them verbatim. The writer mirrors the
+    same envelope so reserved values round-trip. Three documented
+    `pic_type` constants (`HEVC_PIC_TYPE_I_ONLY = 0`,
+    `HEVC_PIC_TYPE_P_OR_I = 1`, `HEVC_PIC_TYPE_B_P_OR_I = 2`) plus
+    `HEVC_PIC_TYPE_MAX = 7`.
+  - `h266::parse_aud` / `h266::write_aud` (§7.3.2.10 / §7.4.3.10):
+    surfaces both `aud_irap_or_gdr_flag` u(1) and `aud_pic_type` u(3)
+    on a `VvcAccessUnitDelimiter` struct. Same reserved-value contract
+    as HEVC: 3..=7 round-trip unchanged. Writer rejects fields
+    outside their u(1) / u(3) envelopes as
+    [`BitstreamError::InvalidData`]. Constants `AUD_PIC_TYPE_I_ONLY`,
+    `AUD_PIC_TYPE_P_OR_I`, `AUD_PIC_TYPE_B_P_OR_I` and
+    `AUD_PIC_TYPE_MAX = 7` document the envelope.
+
+  Each writer emits the canonical NAL header (H.264: `nal_ref_idc = 0`
+  / type 9; HEVC: `layer_id = 0` / `tid_plus1 = 1` / type 35; H.266:
+  `layer_id = 0` / `tid_plus1 = 1` / type 20) followed by a 1-byte
+  RBSP packing the signalled field(s) plus the `rbsp_trailing_bits()`
+  marker. The single-byte RBSP cannot trigger the
+  `0x00 0x00 0x0{0..3}` start-code-emulation triple, so the encoded
+  EBSP is byte-identical to the RBSP and no
+  emulation-prevention stuffing is required.
+
+  Twenty-five new in-module AUD tests cover the round-trip across
+  every u(3) value, the canonical byte layout for representative
+  inputs, reserved-value pass-through (HEVC + H.266), out-of-range
+  field rejection on the writer side, wrong-NAL-type rejection,
+  truncated-input rejection, header-only-NAL rejection, and
+  missing-stop-bit rejection. Five new `roundtrip_props.rs`
+  invariants exercise the writer / parser pair across the full u(3)
+  range for each codec (with `0..=255` oversized-value rejection on
+  the writer side), and pin the exact emitted byte layout for three
+  representative inputs (one per codec).
+
+- `BitWriter::write_rbsp_trailing_bits()` — the exact inverse of
+  [`BitReader::read_rbsp_trailing_bits`]. Writes a single
+  `rbsp_stop_one_bit` (= 1) followed by enough `alignment_zero_bit`
+  values to push the bit cursor to the next byte boundary. Three new
+  `bit_writer` unit tests cover the byte-boundary canonical case
+  (writer at bit 0 -> emits `0x80`), the
+  start-at-every-bit-position-then-reader-accepts-marker invariant
+  (`prefix_bits ∈ 0..8`), and the seven-payload-bits-fill-one-byte
+  case (`0xff` is a valid AUD RBSP). The H.264, HEVC and H.266 AUD
+  writers above use this helper to terminate their 1-byte RBSPs.
+
 - IVF muxer (`ivf::write_header`, `ivf::write_frame`, `ivf::write_all`)
   — the inverse of the existing demuxer (`parse_header`, `parse_frame`,
   `parse_all`). `write_header` emits a 32-byte `DKIF` global header

@@ -34,6 +34,7 @@ three HW bridges share, without the SW-codec baggage.
 | Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | yes | yes | structural VPS (7.3.2.3, single-layer) + SPS (7.3.2.4 + 7.3.3) | yes |
 | Picture header (PPS / Frame-Header OBU) | yes | yes | structural PPS (7.3.2.5 prefix) + PH structural prefix (7.3.2.7 / 7.3.2.8 through `ph_pic_parameter_set_id`) plus an SPS-context variant (`parse_picture_header_with_sps`) that extends through `ph_pic_order_cnt_lsb` u(v) and `ph_recovery_poc_cnt` ue(v) | yes |
 | Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
+| Access unit delimiter (AUD) parse + write | yes (`primary_pic_type` u(3)) | yes (`pic_type` u(3), incl. reserved-value pass-through) | yes (`aud_irap_or_gdr_flag` u(1) + `aud_pic_type` u(3), incl. reserved-value pass-through) | n/a (OBU framing handles AU boundaries) |
 | DCT, entropy decode, motion compensation, in-loop filtering | no | no | no | no |
 | Scaling lists | rejected | rejected | n/a | n/a |
 | FMO / ASO / multiple slice groups | rejected | n/a | n/a | n/a |
@@ -104,6 +105,7 @@ VCL specs use. Each pair is an exact round-trip inverse:
 | `te(v)` truncated Exp-Golomb | `te(x_max)`             | `write_te(value, x_max)`          | H.264 §9.1.2                   |
 | Signed magnitude (`n` bits + 1 sign) | `signed_magnitude(n)` | `write_signed_magnitude` | VP9 §6.2.7 + legacy headers    |
 | Aligned byte slice  | `read_bytes(n)`                 | `write_bytes(&[u8])`              | (helper)                       |
+| `rbsp_trailing_bits()` marker | `read_rbsp_trailing_bits` | `write_rbsp_trailing_bits`        | H.264 §7.3.2.11 / H.265 §7.3.2.11 / H.266 §7.3.10 |
 | LEB128 (AV1)        | `av1::read_leb128`              | `av1::write_leb128`               | AV1 §4.10                      |
 | EBSP ↔ RBSP byte stuffing | `nal::ebsp_to_rbsp`        | `nal::rbsp_to_ebsp`               | H.264 / H.265 §7.4.1.1, H.266 §7.3.1.1 + §7.4.2.1 |
 | Annex-B / OBU framing | per-module                   | per-module                        | per-codec                      |
