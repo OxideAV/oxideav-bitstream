@@ -56,7 +56,8 @@ src/
 ├── lib.rs           # re-exports each codec module + BitstreamError
 ├── bit_reader.rs    # shared u(n) / u64(n) / ue(v) / se(v) / i(n) /
 │                    # te(v) / signed_magnitude(n) / read_bytes reader,
-│                    # peek_bits, more_rbsp_data, read_rbsp_trailing_bits
+│                    # peek_bits / peek_bits_u64, more_rbsp_data,
+│                    # read_rbsp_trailing_bits
 ├── bit_writer.rs    # MSB-first writer — inverse of bit_reader
 │                    # (write_bits / write_ue / write_se / write_i /
 │                    # write_te / write_signed_magnitude / write_bytes)
@@ -99,6 +100,7 @@ VCL specs use. Each pair is an exact round-trip inverse:
 | Descriptor          | Reader                          | Writer                            | Spec                           |
 | ------------------- | ------------------------------- | --------------------------------- | ------------------------------ |
 | `u(n)`              | `u(n)` / `u64(n)`               | `write_bits` / `write_bits_u64`   | H.264 §7.2                     |
+| Look-ahead peek     | `peek_bits(n)` / `peek_bits_u64(n)` | (n/a — peek does not advance) | (helper)                       |
 | `i(n)` 2's-complement signed | `i(n)`                  | `write_i`                         | H.264 §7.2 / H.265 §7.2        |
 | `ue(v)` unsigned Exp-Golomb | `ue`                     | `write_ue`                        | H.264 §9.1                     |
 | `se(v)` signed Exp-Golomb | `se`                       | `write_se`                        | H.264 §9.1.1                   |

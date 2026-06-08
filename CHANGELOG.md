@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BitReader::peek_bits_u64(n)` — 64-bit counterpart of the existing
+  `peek_bits`, symmetric with `BitReader::u64`. Inspects up to 64 bits
+  ahead of the current `bit_pos` without advancing it, with the same
+  past-the-end "zero bits" contract as `u64`. Borrows the reader
+  `&self` so callers can peek without losing other borrows. Useful for
+  parsers that need to inspect a wide marker (e.g. AV1's
+  `reference_frame_id` u(v) class fields up to 16 bits, leb128-aware
+  look-aheads on a 64-bit horizon) before deciding whether to commit
+  to a branch. Five new in-module unit tests cover the bit-zero case
+  matching `u64(64)`, every (offset, width) pair on a 16-byte buffer
+  for widths 0..=64, past-end zero-padding (both fully past-end and
+  partial straddle), agreement with `peek_bits` for widths up to 32,
+  and the width-zero no-op. Three new `roundtrip_props.rs` invariants
+  exercise the new primitive: a 120-iteration randomised
+  every-offset-every-width parity check against `u64` (asserting
+  `peek_bits` agreement for n ≤ 32 and the past-end-low-bits-zero
+  contract), an empty-reader panic-hardening assertion across all
+  widths 0..=64, and a 400-iteration writer ↔ peek round-trip across
+  random `(value, width)` field sequences. The reader fuzz harness's
+  opcode tape now also calls `peek_bits_u64` on every iteration so
+  attacker bytes exercise the new surface.
+
 - Access unit delimiter (AUD) parse + write for H.264, HEVC and H.266.
   Each codec module now exposes a public NAL-level entry point and its
   inverse:

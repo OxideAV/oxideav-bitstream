@@ -368,6 +368,98 @@ fn peek_bits_equals_subsequent_u_for_every_width_and_offset() {
 }
 
 #[test]
+fn peek_bits_u64_equals_subsequent_u64_for_every_width_and_offset() {
+    // 64-bit analogue of the peek_bits property: peek_bits_u64(n) at
+    // offset p returns the same value as u64(n) at offset p, but leaves
+    // the reader unmoved. Drive across random buffers, every starting
+    // offset within the buffer, and every width 0..=64.
+    let mut rng = Lcg::new(0x6789_abcd_0123_4567);
+    for _ in 0..120 {
+        // Buffer needs to be large enough that the widest peek (64
+        // bits) at the deepest in-buffer offset still has bits to read.
+        // 14..=20 bytes gives 112..=160 bits.
+        let len = (rng.next_u32() % 7) as usize + 14;
+        let bytes: Vec<u8> = (0..len).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+        for start in 0..(len * 8) {
+            for n in 0..=64u32 {
+                let mut r_peek = BitReader::new(&bytes);
+                r_peek.skip(start);
+                let peeked = r_peek.peek_bits_u64(n);
+                assert_eq!(r_peek.bit_pos(), start, "peek_u64 must not advance");
+
+                let mut r_read = BitReader::new(&bytes);
+                r_read.skip(start);
+                let read = r_read.u64(n);
+                assert_eq!(read, peeked, "peek_u64/read mismatch start={start} n={n}");
+
+                // For n ≤ 32 the value must also match peek_bits.
+                if n <= 32 {
+                    let r32 = BitReader::new(&bytes);
+                    let mut r32m = r32;
+                    r32m.skip(start);
+                    let p32 = r32m.peek_bits(n);
+                    assert_eq!(peeked, p32 as u64, "peek_bits_u64 != peek_bits for n={n}");
+                }
+
+                // Past-the-end contract: bits beyond the buffer read
+                // as zero. Past-end bits land in the LOW positions of
+                // the result because the loop shifts left and ORs in
+                // each successive bit. For any (start, n) with
+                // n > bits_remaining, the low `n - rem` bits of `peeked`
+                // must therefore be zero.
+                let rem = (len * 8).saturating_sub(start) as u32;
+                if n > rem {
+                    let low_zero_bits = n - rem;
+                    let low_mask = mask64(low_zero_bits);
+                    assert_eq!(
+                        peeked & low_mask,
+                        0,
+                        "past-end bits must be zero start={start} n={n} rem={rem}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn peek_bits_u64_does_not_panic_on_empty_reader() {
+    let r = BitReader::new(&[]);
+    for n in 0u32..=64 {
+        assert_eq!(r.peek_bits_u64(n), 0);
+    }
+    assert_eq!(r.bit_pos(), 0);
+}
+
+#[test]
+fn peek_bits_u64_full_width_round_trips_against_writer() {
+    // Write a sequence of random u64 fields with widths drawn from
+    // 1..=64; for each, peek_bits_u64 at the reader's current position
+    // must return the same value u64(n) will subsequently return.
+    let mut rng = Lcg::new(0xfedc_ba98_7654_3210);
+    for _ in 0..400 {
+        let mut w = BitWriter::new();
+        let mut fields: Vec<(u64, u32)> = Vec::new();
+        let nfields = (rng.next_u32() % 8) as usize + 1;
+        for _ in 0..nfields {
+            let n = rng.range(1, 64);
+            let raw = rng.next_u64();
+            let masked = raw & mask64(n);
+            w.write_bits_u64(masked, n);
+            fields.push((masked, n));
+        }
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        for (expected, n) in fields {
+            let peeked = r.peek_bits_u64(n);
+            assert_eq!(peeked, expected, "peek_bits_u64 mismatch n={n}");
+            let read = r.u64(n);
+            assert_eq!(read, expected, "u64 mismatch n={n}");
+        }
+    }
+}
+
+#[test]
 fn rbsp_trailing_bits_roundtrips_at_every_bit_offset() {
     // For each payload-bit count 0..=23 and each random payload value,
     // build a buffer containing `payload || rbsp_stop_one_bit ||

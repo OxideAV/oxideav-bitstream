@@ -123,6 +123,38 @@ impl<'a> BitReader<'a> {
         value
     }
 
+    /// Peek the next `n` bits MSB-first into a `u64` without advancing
+    /// `bit_pos`. The 64-bit counterpart of [`BitReader::peek_bits`],
+    /// symmetric with [`BitReader::u64`]. `n` must be ≤ 64.
+    ///
+    /// Past-the-end bits are zero, identical to [`BitReader::u64`]'s
+    /// contract. Useful for codec parsers that need to inspect a wide
+    /// marker (e.g. AV1's `reference_frame_id` u(v) class fields up to
+    /// 16 bits or longer leb128-aware look-aheads on a 64-bit horizon)
+    /// before deciding whether to commit to a branch.
+    ///
+    /// `peek_bits_u64(n)` is observationally equivalent to a `u64(n)`
+    /// followed by rewinding `bit_pos` by `n`, but the reader stays
+    /// borrowed `&self` rather than `&mut self` so callers can peek
+    /// without losing other borrows.
+    pub fn peek_bits_u64(&self, n: u32) -> u64 {
+        debug_assert!(n <= 64, "BitReader::peek_bits_u64({n}) > 64 bits");
+        let mut value: u64 = 0;
+        let total = self.total_bits();
+        for offset in 0..n as usize {
+            let pos = self.bit_pos + offset;
+            let bit = if pos < total {
+                let byte_idx = pos / 8;
+                let shift = 7 - (pos % 8) as u32;
+                ((self.bytes[byte_idx] >> shift) & 1) as u64
+            } else {
+                0
+            };
+            value = (value << 1) | bit;
+        }
+        value
+    }
+
     /// H.264 §7.2 / H.265 §7.2 / H.266 §7.2 `more_rbsp_data()`.
     ///
     /// Returns `true` if there is at least one more RBSP data bit
@@ -414,6 +446,88 @@ mod tests {
         assert_eq!(peeked, 0b1010_1100);
         assert_eq!(r.bit_pos(), 0);
         assert_eq!(r.u(8), 0b1010_1100);
+    }
+
+    #[test]
+    fn peek_bits_u64_matches_u64_at_bit_zero() {
+        // Width 64 covers every byte completely; verify the value
+        // matches a `u64(64)` read on a fresh reader.
+        let bytes = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22];
+        let r0 = BitReader::new(&bytes);
+        let peeked = r0.peek_bits_u64(64);
+        assert_eq!(peeked, 0x1234_5678_9abc_def0);
+        // Reader's bit_pos must be unchanged after a peek.
+        assert_eq!(r0.bit_pos(), 0);
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.u64(64), peeked);
+        assert_eq!(r.bit_pos(), 64);
+    }
+
+    #[test]
+    fn peek_bits_u64_at_unaligned_offset_matches_subsequent_u64() {
+        // Drive across every bit offset 0..16 and every width 0..=64 on
+        // a fixed buffer; peek then read must agree.
+        let bytes: [u8; 16] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        for start in 0..16usize {
+            for n in 0u32..=64 {
+                let mut r_peek = BitReader::new(&bytes);
+                r_peek.skip(start);
+                let peeked = r_peek.peek_bits_u64(n);
+                assert_eq!(r_peek.bit_pos(), start, "peek must not advance");
+                let mut r_read = BitReader::new(&bytes);
+                r_read.skip(start);
+                let read = r_read.u64(n);
+                assert_eq!(
+                    read, peeked,
+                    "peek_bits_u64 / u64 mismatch start={start} n={n}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn peek_bits_u64_past_end_is_zero_padded() {
+        let bytes = [0xff_u8; 4];
+        let mut r = BitReader::new(&bytes);
+        // Consume the buffer; subsequent peeks must return zeros.
+        r.u64(32);
+        assert!(r.at_end());
+        assert_eq!(r.peek_bits_u64(64), 0);
+        // Partial overlap: at bit 24, the next 16 bits straddle the end.
+        // Bits 24..32 = 0xff; bits 32.. = past end = 0.
+        let mut r = BitReader::new(&bytes);
+        r.u64(24);
+        assert_eq!(r.peek_bits_u64(16), 0xff00);
+    }
+
+    #[test]
+    fn peek_bits_u64_agrees_with_peek_bits_for_widths_up_to_32() {
+        // For n ≤ 32 the 64-bit peek and the 32-bit peek must produce
+        // identical values (the high 32 bits of the u64 are zero).
+        let bytes: [u8; 5] = [0xa5, 0x5a, 0xc3, 0x3c, 0xf0];
+        for start in 0..(bytes.len() * 8) {
+            for n in 0u32..=32 {
+                let mut r1 = BitReader::new(&bytes);
+                r1.skip(start);
+                let v32 = r1.peek_bits(n);
+                let r2 = BitReader::new(&bytes);
+                let mut r2m = r2;
+                r2m.skip(start);
+                let v64 = r2m.peek_bits_u64(n);
+                assert_eq!(v64, v32 as u64, "start={start} n={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn peek_bits_u64_width_zero_returns_zero() {
+        let bytes = [0xff_u8; 2];
+        let r = BitReader::new(&bytes);
+        assert_eq!(r.peek_bits_u64(0), 0);
+        assert_eq!(r.bit_pos(), 0);
     }
 
     #[test]

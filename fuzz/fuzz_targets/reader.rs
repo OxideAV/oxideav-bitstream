@@ -125,11 +125,14 @@ fn drive_reader(data: &[u8]) {
                 let _ = r.bits_remaining();
                 let _ = r.at_end();
                 let _ = r.byte_aligned();
-                // peek_bits / more_rbsp_data / read_rbsp_trailing_bits
-                // are part of the foundational surface; they must never
-                // panic on attacker bytes either.
+                // peek_bits / peek_bits_u64 / more_rbsp_data /
+                // read_rbsp_trailing_bits are part of the foundational
+                // surface; they must never panic on attacker bytes
+                // either.
                 let pn = (op as u32 >> 2) % 33;
                 let _ = r.peek_bits(pn);
+                let pn64 = (op as u32 >> 1) % 65;
+                let _ = r.peek_bits_u64(pn64);
                 let _ = r.more_rbsp_data();
                 // read_rbsp_trailing_bits mutates position; only call it
                 // occasionally so the tape keeps making progress.
