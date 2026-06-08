@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BitReader::ns(n)` and `BitWriter::write_ns(value, n)` — AV1 §4.10.7
+  non-symmetric unsigned integer descriptor. Outputs values in range
+  `0..n`, emitting `FloorLog2(n)` bits for the lower part of the range
+  and `FloorLog2(n) + 1` bits for the upper part. Used by the AV1
+  syntax for tile sizes (`width_in_sbs_minus_1`, `height_in_sbs_minus_1`)
+  and film-grain `subexp_final_bits` (§5.9.15 / §5.9.30). The reader
+  rejects `n == 0` (the spec only defines `ns(n)` for `n >= 1`), caps
+  `n` at `1 << 30` so the internal arithmetic always fits in `u32`,
+  and short-circuits `n == 1` to return 0 without consuming any bits
+  (the trivial single-value alphabet). The writer enforces
+  `value < n`, the same `n == 0` and envelope rejections, and the
+  same zero-bit emission for `n == 1`. Powers of two are handled per
+  the spec (`w = FloorLog2(n) + 1` keeps a redundant high bit;
+  decoders that compute `w` from `n - 1` would otherwise undershoot
+  by one — patched explicitly).
+
+  Six new in-module reader unit tests pin the spec's `n = 5` byte
+  layout (codes `00, 01, 10, 110, 111`), confirm `n == 1` consumes
+  zero bits, exercise the power-of-two branch on `n = 4`, walk the
+  `n = 3` two-bit-for-everyone-but-zero pattern, and reject `n == 0`
+  / `n` above the supported envelope. Five new writer unit tests
+  mirror the reader's spec-table pinning, the zero-bit emission for
+  `n == 1`, rejection of `value >= n`, rejection of `n == 0` and
+  oversized `n`, and an exhaustive `1..=33` × `0..n` round-trip
+  through the writer/reader pair. Four new `roundtrip_props.rs`
+  invariants extend that to `n` up to 257 exhaustively (spanning the
+  power-of-two boundary at 256), a 600-pair mixed-`n` packing test
+  that catches alignment bugs the per-value tests miss, a check that
+  `ns(1)` is invisible when sandwiched between two `u(8)` fields,
+  and the writer's rejection-paths-leave-buffer-clean contract. The
+  reader fuzz harness now also drives `ns(n)` on attacker bytes
+  every opcode-tape iteration and adds a structured `write_ns` →
+  `ns` round-trip on attacker-derived `(value, n)` pairs.
+
 - `BitReader::peek_bits_u64(n)` — 64-bit counterpart of the existing
   `peek_bits`, symmetric with `BitReader::u64`. Inspects up to 64 bits
   ahead of the current `bit_pos` without advancing it, with the same

@@ -80,6 +80,12 @@ fuzz_target!(|data: &[u8]| {
     //    synthesise a header + frame list from attacker bytes,
     //    frame them, then assert parse_all reproduces the originals.
     ivf_writer_roundtrip(data);
+
+    // 9. ns(n) writer -> reader round-trip on a structured view of
+    //    the input. write_ns is the AV1 §4.10.7 non-symmetric
+    //    primitive; the inverse-pair contract is exercised here on
+    //    attacker-derived (value, n) pairs.
+    ns_writer_roundtrip(data);
 });
 
 /// Treat `data` as an opcode tape and a payload simultaneously, running
@@ -139,6 +145,12 @@ fn drive_reader(data: &[u8]) {
                 if op & 0b1100_0000 == 0b1100_0000 {
                     let _ = r.read_rbsp_trailing_bits();
                 }
+                // ns(n) is the AV1 non-symmetric primitive. Derive n
+                // from the opcode tape so attacker bytes drive the
+                // alphabet size; clamp into 1..=257 so the
+                // power-of-two boundary at 256 also gets touched.
+                let nv = (op as u32 % 257) + 1;
+                let _ = r.ns(nv);
             }
         }
     }
@@ -372,4 +384,35 @@ fn ivf_writer_roundtrip(data: &[u8]) {
         incremental, buf,
         "incremental write_header+write_frame equals write_all"
     );
+}
+
+/// Carve `data` into `(value, n)` pairs and exercise the `ns(n)`
+/// writer / reader inverse-pair. Each pair uses 3 bytes:
+/// 2 for the alphabet size `n` (clamped into `1..=257`), 1 for the
+/// value (taken `mod n`). When `write_ns` succeeds, reading back from
+/// the resulting buffer must reproduce the same value.
+fn ns_writer_roundtrip(data: &[u8]) {
+    let mut w = BitWriter::new();
+    let mut fields: Vec<(u32, u32)> = Vec::new();
+    for chunk in data.chunks_exact(3) {
+        if fields.len() >= 256 {
+            break;
+        }
+        // Clamp n into the 1..=257 envelope; the boundary at 256 (a
+        // power of two) is the interesting one for the spec's
+        // `FloorLog2(n) + 1` branch.
+        let n = u16::from_le_bytes([chunk[0], chunk[1]]) as u32 % 257 + 1;
+        let value = chunk[2] as u32 % n;
+        w.write_ns(value, n).expect("legal (value, n)");
+        fields.push((value, n));
+    }
+    if fields.is_empty() {
+        return;
+    }
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    for (value, n) in fields {
+        let got = r.ns(n).expect("legal (value, n) decodes");
+        assert_eq!(got, value, "ns round-trip mismatch n={n} value={value}");
+    }
 }

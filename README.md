@@ -55,12 +55,13 @@ what's parsed today versus deferred.
 src/
 ├── lib.rs           # re-exports each codec module + BitstreamError
 ├── bit_reader.rs    # shared u(n) / u64(n) / ue(v) / se(v) / i(n) /
-│                    # te(v) / signed_magnitude(n) / read_bytes reader,
-│                    # peek_bits / peek_bits_u64, more_rbsp_data,
-│                    # read_rbsp_trailing_bits
+│                    # te(v) / ns(n) / signed_magnitude(n) / read_bytes
+│                    # reader, peek_bits / peek_bits_u64,
+│                    # more_rbsp_data, read_rbsp_trailing_bits
 ├── bit_writer.rs    # MSB-first writer — inverse of bit_reader
 │                    # (write_bits / write_ue / write_se / write_i /
-│                    # write_te / write_signed_magnitude / write_bytes)
+│                    # write_te / write_ns / write_signed_magnitude /
+│                    # write_bytes)
 ├── nal.rs           # shared ebsp_to_rbsp + rbsp_to_ebsp (H.264 7.4.1.1 /
 │                    # H.265 7.4.1.1 / H.266 7.3.1.1 +7.4.2.1)
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
@@ -105,6 +106,7 @@ VCL specs use. Each pair is an exact round-trip inverse:
 | `ue(v)` unsigned Exp-Golomb | `ue`                     | `write_ue`                        | H.264 §9.1                     |
 | `se(v)` signed Exp-Golomb | `se`                       | `write_se`                        | H.264 §9.1.1                   |
 | `te(v)` truncated Exp-Golomb | `te(x_max)`             | `write_te(value, x_max)`          | H.264 §9.1.2                   |
+| `ns(n)` non-symmetric unsigned (AV1 tile sizes / film-grain) | `ns(n)` | `write_ns(value, n)` | AV1 §4.10.7 |
 | Signed magnitude (`n` bits + 1 sign) | `signed_magnitude(n)` | `write_signed_magnitude` | VP9 §6.2.7 + legacy headers    |
 | Aligned byte slice  | `read_bytes(n)`                 | `write_bytes(&[u8])`              | (helper)                       |
 | `rbsp_trailing_bits()` marker | `read_rbsp_trailing_bits` | `write_rbsp_trailing_bits`        | H.264 §7.3.2.11 / H.265 §7.3.2.11 / H.266 §7.3.10 |

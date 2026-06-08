@@ -1689,3 +1689,100 @@ fn aud_writers_emit_documented_byte_layout() {
         vec![0x00, 0xA1, 0x98]
     );
 }
+
+/// Exhaustive `ns(n)` round-trip across the small-`n` envelope that
+/// AV1's tile-size and film-grain syntax actually exercises.
+///
+/// For each `n` in `1..=257` and every `value` in `0..n`, the
+/// writer-then-reader pair must reproduce `value` exactly. 257 spans
+/// the power-of-two boundary at 256 — the AV1 spec's
+/// `w = FloorLog2(n) + 1` keeps an extra high bit at exact powers of
+/// two, which our code patches up; this test pins that branch.
+#[test]
+fn ns_roundtrips_exhaustively_for_small_alphabets() {
+    for n in 1u32..=257 {
+        for value in 0..n {
+            let mut w = BitWriter::new();
+            w.write_ns(value, n).unwrap();
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            let got = r.ns(n).unwrap();
+            assert_eq!(got, value, "round-trip mismatch n={n} value={value}");
+            assert!(
+                r.bit_pos() <= bytes.len() * 8,
+                "reader over-consumed n={n} value={value}"
+            );
+        }
+    }
+}
+
+/// Mixed-`n` field stream: write a sequence of `(value, n)` `ns(n)`
+/// codes back-to-back, then read them back in order. Catches packing
+/// bugs that a per-value test (which always starts at bit 0) misses.
+#[test]
+fn ns_round_trip_mixed_fields_packed_back_to_back() {
+    // Drive 600 deterministic (value, n) pairs through the writer
+    // and read them back. The seed-based RNG (already defined above
+    // for the u(n) / ue / se randomised tests) gives reproducible
+    // failure cases.
+    let mut rng = Lcg::new(0xA1B2_C3D4_E5F6_0708);
+    let mut fields: Vec<(u32, u32)> = Vec::new();
+    for _ in 0..600 {
+        // Vary n across the spec's interesting envelope: 1..=128 covers
+        // every tile-size case the AV1 sequence-header / film-grain
+        // params hit in practice.
+        let n = rng.range(1, 128);
+        let value = rng.next_u32() % n;
+        fields.push((value, n));
+    }
+    let mut w = BitWriter::new();
+    for &(v, n) in &fields {
+        w.write_ns(v, n).expect("legal field");
+    }
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    for (i, &(v, n)) in fields.iter().enumerate() {
+        let got = r.ns(n).expect("legal field decodes");
+        assert_eq!(got, v, "field {i} mismatch: expected {v} got {got} (n={n})");
+    }
+}
+
+/// The single-value alphabet (`n == 1`) is a zero-cost code: neither
+/// the writer nor the reader may consume bits, even in the presence of
+/// surrounding fields. This property test wraps an `ns(1)` between two
+/// `u(8)` reads to confirm the bit cursor truly stays put.
+#[test]
+fn ns_with_n_one_is_invisible_to_surrounding_fields() {
+    let mut w = BitWriter::new();
+    w.write_bits(0xA5, 8);
+    w.write_ns(0, 1).unwrap();
+    w.write_bits(0x5A, 8);
+    let bytes = w.finish();
+    assert_eq!(bytes, vec![0xA5, 0x5A], "ns(1) must not emit any bits");
+    let mut r = BitReader::new(&bytes);
+    assert_eq!(r.u(8), 0xA5);
+    assert_eq!(r.ns(1).unwrap(), 0);
+    assert_eq!(r.bit_pos(), 8, "ns(1) must not consume any bits");
+    assert_eq!(r.u(8), 0x5A);
+}
+
+/// `ns(n)` rejection paths must leave the writer untouched. A failed
+/// write must not flush partial bits into the buffer (it does not, by
+/// construction, but the contract is worth pinning).
+#[test]
+fn ns_writer_rejection_paths_leave_buffer_clean() {
+    // value == n out of range
+    let mut w = BitWriter::new();
+    assert!(w.write_ns(5, 5).is_err());
+    assert!(w.as_bytes().is_empty());
+
+    // n == 0
+    let mut w = BitWriter::new();
+    assert!(w.write_ns(0, 0).is_err());
+    assert!(w.as_bytes().is_empty());
+
+    // n above envelope
+    let mut w = BitWriter::new();
+    assert!(w.write_ns(0, (1u32 << 30) + 1).is_err());
+    assert!(w.as_bytes().is_empty());
+}

@@ -343,6 +343,69 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// `ns(n)` — non-symmetric encoded integer with maximum number of
+    /// values `n` (output in range `0..n`). AV1 spec §4.10.7.
+    ///
+    /// Reduces wastage when encoding a range whose size is not a power
+    /// of two by emitting `FloorLog2(n)` bits for the lower part of
+    /// the range and `FloorLog2(n) + 1` bits for the upper part.
+    ///
+    /// Algorithm (verbatim from §4.10.7, restated in Rust):
+    ///
+    /// ```text
+    /// w = FloorLog2(n) + 1
+    /// m = (1 << w) - n
+    /// v = f(w - 1)
+    /// if v < m { return v }
+    /// extra_bit = f(1)
+    /// return (v << 1) - m + extra_bit
+    /// ```
+    ///
+    /// `n == 0` is rejected — the spec only defines `ns(n)` for
+    /// `n >= 1`. `n == 1` yields the trivial code (a zero-bit read
+    /// that always returns 0) which we serve directly without
+    /// touching `bit_pos`.
+    ///
+    /// `n` is capped at `1 << 30` so that `w` never exceeds 31 and the
+    /// arithmetic always fits in `u32`. Realistic AV1 callers stay far
+    /// below that bound (the largest envelope is the tile-size
+    /// `width_in_sbs_minus_1 ns(maxWidth)`, where `maxWidth <= 64`).
+    pub fn ns(&mut self, n: u32) -> Result<u32, BitstreamError> {
+        if n == 0 {
+            return Err(BitstreamError::InvalidData(
+                "ns(n): n == 0 has no defined code".into(),
+            ));
+        }
+        if n > (1u32 << 30) {
+            return Err(BitstreamError::InvalidData(format!(
+                "ns(n): n={n} exceeds the supported 1<<30 envelope"
+            )));
+        }
+        if n == 1 {
+            return Ok(0);
+        }
+        // w = FloorLog2(n) + 1 == number of bits needed to address n
+        // when n is not a power of two, i.e. the bit width of (n-1) + 1
+        // when n is a power of two. For n >= 2, w >= 2.
+        let w = 32 - (n - 1).leading_zeros();
+        // For n == 2 the AV1 spec gives w = FloorLog2(2) + 1 = 2 but
+        // our (32 - leading_zeros) formula yields w = 1. The two
+        // definitions agree everywhere except at exact powers of two,
+        // where the spec leaves a redundant high bit (m would be 0 and
+        // every value would be coded with w-1 bits). Patch w upward
+        // when n is exactly a power of two so we match §4.10.7 byte-
+        // for-byte.
+        let w = if n.is_power_of_two() { w + 1 } else { w };
+        let m = (1u32 << w) - n;
+        let v = self.u(w - 1);
+        if v < m {
+            Ok(v)
+        } else {
+            let extra_bit = self.read_bit();
+            Ok((v << 1) - m + extra_bit)
+        }
+    }
+
     /// Read `n` aligned bytes into a borrowed slice. The reader must be
     /// byte-aligned at entry; otherwise an `InvalidData` is returned
     /// (callers should `align_to_byte()` first or use the bit-level
@@ -768,5 +831,65 @@ mod tests {
         ));
         // Position must be unchanged on the failure path.
         assert_eq!(r.bit_pos(), 0);
+    }
+
+    #[test]
+    fn ns_matches_av1_spec_table_for_n_five() {
+        // AV1 §4.10.7 table: n=5 → codes 00, 01, 10, 110, 111.
+        // Pack the five codes back-to-back: 00 01 10 110 111 =
+        // 0001_1011 0111 -> 12 bits -> 0x1B 0x70 (last 4 bits unused).
+        let bytes = [0b0001_1011, 0b0111_0000];
+        let mut r = BitReader::new(&bytes);
+        for expected in 0u32..=4 {
+            assert_eq!(r.ns(5).unwrap(), expected, "value {expected}");
+        }
+    }
+
+    #[test]
+    fn ns_with_n_one_returns_zero_without_reading() {
+        let bytes = [0xff_u8; 2];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.ns(1).unwrap(), 0);
+        // Trivial single-value alphabet must not consume bits.
+        assert_eq!(r.bit_pos(), 0);
+    }
+
+    #[test]
+    fn ns_with_power_of_two_n_is_plain_f_log2_n() {
+        // n=4 → w=3, m=4, so every value in 0..4 is coded as plain
+        // u(2). Encode codes 00, 01, 10, 11 -> 0b0001_1011 = 0x1B.
+        let bytes = [0b0001_1011];
+        let mut r = BitReader::new(&bytes);
+        for expected in 0u32..=3 {
+            assert_eq!(r.ns(4).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn ns_with_n_three_uses_one_bit_for_zero_two_bits_for_others() {
+        // n=3 → w=2, m=1. Codes: 0 → `0`, 1 → `10`, 2 → `11`.
+        // Pack: 0 10 11 = 0_10_11 padded -> 0b0101_1000 = 0x58
+        let bytes = [0b0101_1000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.ns(3).unwrap(), 0);
+        assert_eq!(r.ns(3).unwrap(), 1);
+        assert_eq!(r.ns(3).unwrap(), 2);
+    }
+
+    #[test]
+    fn ns_rejects_n_zero() {
+        let bytes = [0xff_u8; 2];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(r.ns(0), Err(BitstreamError::InvalidData(_))));
+    }
+
+    #[test]
+    fn ns_rejects_n_above_envelope() {
+        let bytes = [0xff_u8; 8];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(
+            r.ns((1u32 << 30) + 1),
+            Err(BitstreamError::InvalidData(_))
+        ));
     }
 }

@@ -209,6 +209,56 @@ impl BitWriter {
         }
     }
 
+    /// Write a non-symmetric encoded integer — the inverse of
+    /// [`BitReader::ns`](crate::bit_reader::BitReader::ns). AV1 spec
+    /// §4.10.7.
+    ///
+    /// `n` is the size of the value range (output in `0..n`). `value`
+    /// must satisfy `value < n`; otherwise `InvalidData` is returned.
+    /// `n == 0` is rejected — the spec does not define `ns(0)`.
+    /// `n == 1` emits nothing (the trivial single-value alphabet).
+    ///
+    /// Encoding (inverse of the §4.10.7 decoder):
+    ///
+    /// * `w = FloorLog2(n) + 1` (the AV1 formula; for `n == 1` `w` is
+    ///   undefined and we short-circuit the empty case above);
+    /// * `m = (1 << w) - n`;
+    /// * if `value < m`: emit `value` in `w - 1` bits;
+    /// * else: emit `value + m` in `w` bits (the high bit doubles as
+    ///   `extra_bit`).
+    pub fn write_ns(&mut self, value: u32, n: u32) -> Result<(), BitstreamError> {
+        if n == 0 {
+            return Err(BitstreamError::invalid(
+                "write_ns: n == 0 has no defined code",
+            ));
+        }
+        if n > (1u32 << 30) {
+            return Err(BitstreamError::invalid(format!(
+                "write_ns: n={n} exceeds the supported 1<<30 envelope"
+            )));
+        }
+        if value >= n {
+            return Err(BitstreamError::invalid(format!(
+                "write_ns: value {value} >= n {n}"
+            )));
+        }
+        if n == 1 {
+            // Trivial single-value alphabet: no bits emitted.
+            return Ok(());
+        }
+        let w = 32 - (n - 1).leading_zeros();
+        // Powers-of-two: AV1's w = FloorLog2(n) + 1 keeps a redundant
+        // high bit. Match the spec's bit layout.
+        let w = if n.is_power_of_two() { w + 1 } else { w };
+        let m = (1u32 << w) - n;
+        if value < m {
+            self.write_bits(value, w - 1);
+        } else {
+            self.write_bits(value + m, w);
+        }
+        Ok(())
+    }
+
     /// Append a byte slice. The writer must be byte-aligned; otherwise
     /// returns `InvalidData`. The matching reader is
     /// [`BitReader::read_bytes`](crate::bit_reader::BitReader::read_bytes).
@@ -455,5 +505,72 @@ mod tests {
         w.write_bits(0b111_1111, 7);
         w.write_rbsp_trailing_bits();
         assert_eq!(w.finish(), vec![0xff]);
+    }
+
+    #[test]
+    fn write_ns_matches_av1_spec_table_for_n_five() {
+        // AV1 §4.10.7 table: n=5 codes are 00, 01, 10, 110, 111.
+        // Packed: 0001_1011 0111 -> first byte 0x1B, second 0x70
+        // (last 4 bits unused but BitWriter leaves them zero).
+        let mut w = BitWriter::new();
+        for v in 0u32..=4 {
+            w.write_ns(v, 5).unwrap();
+        }
+        assert_eq!(w.finish(), vec![0b0001_1011, 0b0111_0000]);
+    }
+
+    #[test]
+    fn write_ns_with_n_one_emits_no_bits() {
+        let mut w = BitWriter::new();
+        w.write_ns(0, 1).unwrap();
+        assert_eq!(w.bit_pos(), 0);
+        assert!(w.as_bytes().is_empty());
+    }
+
+    #[test]
+    fn write_ns_rejects_n_zero_and_value_at_or_above_n() {
+        let mut w = BitWriter::new();
+        assert!(matches!(
+            w.write_ns(0, 0),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        // value == n is out of the 0..n range.
+        assert!(matches!(
+            w.write_ns(5, 5),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        // value above n is also rejected.
+        assert!(matches!(
+            w.write_ns(99, 5),
+            Err(BitstreamError::InvalidData(_))
+        ));
+        // Failure paths must not append anything to the buffer.
+        assert!(w.as_bytes().is_empty());
+    }
+
+    #[test]
+    fn write_ns_rejects_n_above_envelope() {
+        let mut w = BitWriter::new();
+        assert!(matches!(
+            w.write_ns(0, (1u32 << 30) + 1),
+            Err(BitstreamError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn ns_roundtrips_for_every_value_in_small_alphabets() {
+        // Exhaustive round-trip across every legal value for n in 1..=33.
+        // 33 is intentionally one past a power of two so the
+        // `is_power_of_two` branch and its successor both get covered.
+        for n in 1u32..=33 {
+            for value in 0..n {
+                let mut w = BitWriter::new();
+                w.write_ns(value, n).unwrap();
+                let bytes = w.finish();
+                let mut r = BitReader::new(&bytes);
+                let got = r.ns(n).unwrap();
+                assert_eq!(got, value, "ns round-trip failed for n={n} value={value}");
+            }
+        }
     }
 }
