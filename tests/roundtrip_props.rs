@@ -663,6 +663,81 @@ fn i_rejects_out_of_range_writes_for_every_width() {
 }
 
 #[test]
+fn su_roundtrips_every_width_1_to_32() {
+    // AV1 §4.10.6 su(n): random i32 inside the representable
+    // [-(2^(n-1)), 2^(n-1) - 1] range, round-tripped through
+    // write_su / su, with the post-read bit position checked too.
+    let mut rng = Lcg::new(0x5151_2727_3939_4b4b);
+    for n in 1..=32u32 {
+        for _ in 0..1500 {
+            let raw = rng.next_u32();
+            let v: i32 = if n == 32 {
+                raw as i32
+            } else {
+                let modulus = 1i64 << n;
+                let half = 1i64 << (n - 1);
+                let bounded = (raw as i64) % modulus;
+                if bounded < half {
+                    bounded as i32
+                } else {
+                    (bounded - modulus) as i32
+                }
+            };
+            let mut w = BitWriter::new();
+            w.write_su(v, n).unwrap();
+            assert_eq!(w.bit_pos(), n as usize);
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.su(n).unwrap(), v, "su({n}) round-trip of {v}");
+            assert_eq!(r.bit_pos(), n as usize);
+        }
+    }
+}
+
+#[test]
+fn su_rejects_out_of_range_writes_for_every_width() {
+    // For each n in 1..=31 the writer must refuse the first value
+    // beyond either bound (no silent truncation), matching the §4.10.6
+    // representable envelope.
+    for n in 1..=31u32 {
+        let min = -(1i64 << (n - 1));
+        let max = (1i64 << (n - 1)) - 1;
+        let mut w = BitWriter::new();
+        assert!(
+            w.write_su((min - 1) as i32, n).is_err(),
+            "n={n} should reject below-min {}",
+            min - 1
+        );
+        assert!(
+            w.write_su((max + 1) as i32, n).is_err(),
+            "n={n} should reject above-max {}",
+            max + 1
+        );
+    }
+}
+
+#[test]
+fn su_agrees_with_i_two_s_complement_at_every_offset() {
+    // su(n) and i(n) produce the same numeric mapping (both are
+    // n-bit two's complement). Cross-check them against each other on
+    // a shared random buffer at every starting bit offset for widths
+    // up to 24, so a future divergence in either decoder is caught.
+    let mut rng = Lcg::new(0x9090_1212_3434_5656);
+    let bytes: Vec<u8> = (0..32).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+    for start in 0..(bytes.len() * 8 - 24) {
+        for n in 1..=24u32 {
+            let mut r_su = BitReader::new(&bytes);
+            r_su.skip(start);
+            let su_val = r_su.su(n).unwrap();
+            let mut r_i = BitReader::new(&bytes);
+            r_i.skip(start);
+            let i_val = r_i.i(n).unwrap();
+            assert_eq!(su_val, i_val, "su/i mismatch start={start} n={n}");
+        }
+    }
+}
+
+#[test]
 fn signed_magnitude_roundtrips_every_width_1_to_31() {
     // n bits of magnitude + 1 sign bit. For each width sweep random
     // values inside [-(2^n - 1), 2^n - 1] and round-trip them.

@@ -406,6 +406,57 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// `su(n)` — signed integer converted from an `n`-bit unsigned
+    /// integer in the bitstream. AV1 spec §4.10.6.
+    ///
+    /// The bottom `n` bits of the signed integer are read directly as an
+    /// unsigned `f(n)` value, then the top bit is interpreted as a sign:
+    ///
+    /// ```text
+    /// value    = f(n)
+    /// signMask = 1 << (n - 1)
+    /// if (value & signMask)
+    ///     value = value - 2 * signMask
+    /// return value
+    /// ```
+    ///
+    /// This is two's-complement sign extension of an `n`-bit field —
+    /// the same numeric mapping the H.26x `i(n)` descriptor produces —
+    /// but it is the AV1-defined descriptor used by, e.g.,
+    /// `delta_q = su(1 + 6)` (§5.9.13) and the global-motion parameter
+    /// reads (§5.9.24). It is surfaced separately so AV1 parsers can
+    /// cite §4.10.6 directly rather than the H.26x equivalent.
+    ///
+    /// `n` must be in `1..=32`. `n == 0` is rejected (the `signMask`
+    /// shift `1 << (n - 1)` is undefined and a zero-bit signed integer
+    /// has no representation). Past-the-end bits read as zero per
+    /// [`BitReader::u`]'s contract, so over-reads decode to a
+    /// non-negative value rather than panicking.
+    pub fn su(&mut self, n: u32) -> Result<i32, BitstreamError> {
+        if n == 0 || n > 32 {
+            return Err(BitstreamError::InvalidData(format!(
+                "su(n): n={n} outside 1..=32"
+            )));
+        }
+        let value = self.u(n);
+        if n == 32 {
+            // The full 32-bit field is already a two's-complement i32:
+            // `value - 2 * (1 << 31)` overflows u32 arithmetic but is a
+            // no-op modulo 2^32, so the bit pattern reinterpreted as i32
+            // is the §4.10.6 result.
+            Ok(value as i32)
+        } else {
+            let sign_mask = 1u32 << (n - 1);
+            if value & sign_mask != 0 {
+                // value - 2 * signMask, kept in i64 to avoid the u32
+                // underflow the literal spec arithmetic would incur.
+                Ok((value as i64 - 2 * sign_mask as i64) as i32)
+            } else {
+                Ok(value as i32)
+            }
+        }
+    }
+
     /// Read `n` aligned bytes into a borrowed slice. The reader must be
     /// byte-aligned at entry; otherwise an `InvalidData` is returned
     /// (callers should `align_to_byte()` first or use the bit-level
@@ -891,5 +942,74 @@ mod tests {
             r.ns((1u32 << 30) + 1),
             Err(BitstreamError::InvalidData(_))
         ));
+    }
+
+    #[test]
+    fn su_decodes_signed_for_every_width() {
+        // AV1 §4.10.6: for each width 1..=8, the value is f(n) with the
+        // top bit reinterpreted as a sign. Enumerate every raw pattern.
+        for n in 1u32..=8 {
+            let count = 1u32 << n;
+            let half = 1u32 << (n - 1);
+            for raw in 0..count {
+                let mut bytes = [0u8; 4];
+                let shifted = (raw as u64) << (32 - n);
+                bytes[0] = (shifted >> 24) as u8;
+                bytes[1] = (shifted >> 16) as u8;
+                bytes[2] = (shifted >> 8) as u8;
+                bytes[3] = shifted as u8;
+                let mut r = BitReader::new(&bytes);
+                let got = r.su(n).unwrap();
+                let expected: i32 = if raw < half {
+                    raw as i32
+                } else {
+                    raw as i32 - count as i32
+                };
+                assert_eq!(got, expected, "su({n}) over raw {raw}");
+                assert_eq!(r.bit_pos(), n as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn su_matches_spec_arithmetic_example() {
+        // su(4): raw 0b1011 = 11, signMask = 8, set → 11 - 16 = -5.
+        let bytes = [0b1011_0000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.su(4).unwrap(), -5);
+        // raw 0b0011 = 3, signMask bit clear → +3.
+        let bytes = [0b0011_0000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.su(4).unwrap(), 3);
+    }
+
+    #[test]
+    fn su_full_width_thirty_two_spans_i32() {
+        // 0x8000_0000 → i32::MIN; 0x7fff_ffff → i32::MAX.
+        let bytes = [0x80, 0x00, 0x00, 0x00];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.su(32).unwrap(), i32::MIN);
+        let bytes = [0x7f, 0xff, 0xff, 0xff];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.su(32).unwrap(), i32::MAX);
+    }
+
+    #[test]
+    fn su_width_one_is_zero_or_minus_one() {
+        // n=1: signMask=1, so a `1` bit → 1 - 2 = -1, a `0` bit → 0.
+        let bytes = [0b1000_0000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.su(1).unwrap(), -1);
+        let bytes = [0b0000_0000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.su(1).unwrap(), 0);
+    }
+
+    #[test]
+    fn su_rejects_zero_and_oversize_widths() {
+        let bytes = [0xff; 4];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(r.su(0), Err(BitstreamError::InvalidData(_))));
+        assert!(matches!(r.su(33), Err(BitstreamError::InvalidData(_))));
     }
 }

@@ -86,6 +86,11 @@ fuzz_target!(|data: &[u8]| {
     //    primitive; the inverse-pair contract is exercised here on
     //    attacker-derived (value, n) pairs.
     ns_writer_roundtrip(data);
+
+    // 10. su(n) writer -> reader round-trip. write_su is the AV1
+    //     §4.10.6 signed descriptor; assert write_su followed by su
+    //     reproduces each value on attacker-derived (value, n) pairs.
+    su_writer_roundtrip(data);
 });
 
 /// Treat `data` as an opcode tape and a payload simultaneously, running
@@ -151,6 +156,11 @@ fn drive_reader(data: &[u8]) {
                 // power-of-two boundary at 256 also gets touched.
                 let nv = (op as u32 % 257) + 1;
                 let _ = r.ns(nv);
+                // su(n) is the AV1 §4.10.6 signed descriptor; derive a
+                // legal width 1..=32 from the opcode tape so attacker
+                // bytes drive it too. Past-end reads must not panic.
+                let sn = (op as u32 % 32) + 1;
+                let _ = r.su(sn);
             }
         }
     }
@@ -414,5 +424,46 @@ fn ns_writer_roundtrip(data: &[u8]) {
     for (value, n) in fields {
         let got = r.ns(n).expect("legal (value, n) decodes");
         assert_eq!(got, value, "ns round-trip mismatch n={n} value={value}");
+    }
+}
+
+/// Carve `data` into `(value, n)` pairs and exercise the AV1 §4.10.6
+/// `su(n)` writer / reader inverse-pair. Each pair uses 5 bytes:
+/// 4 for a candidate i32 value, 1 for the width `n` (clamped into
+/// `1..=32`). The candidate value is reduced into the representable
+/// `[-(2^(n-1)), 2^(n-1) - 1]` range so `write_su` always accepts it;
+/// reading back must reproduce the same value.
+fn su_writer_roundtrip(data: &[u8]) {
+    let mut w = BitWriter::new();
+    let mut fields: Vec<(i32, u32)> = Vec::new();
+    for chunk in data.chunks_exact(5) {
+        if fields.len() >= 256 {
+            break;
+        }
+        let n = (chunk[4] as u32 % 32) + 1;
+        let raw = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let value: i32 = if n == 32 {
+            raw as i32
+        } else {
+            let modulus = 1i64 << n;
+            let half = 1i64 << (n - 1);
+            let bounded = (raw as i64) % modulus;
+            if bounded < half {
+                bounded as i32
+            } else {
+                (bounded - modulus) as i32
+            }
+        };
+        w.write_su(value, n).expect("legal (value, n)");
+        fields.push((value, n));
+    }
+    if fields.is_empty() {
+        return;
+    }
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    for (value, n) in fields {
+        let got = r.su(n).expect("legal (value, n) decodes");
+        assert_eq!(got, value, "su round-trip mismatch n={n} value={value}");
     }
 }

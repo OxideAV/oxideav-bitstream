@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BitReader::su(n)` and `BitWriter::write_su(value, n)` — AV1 §4.10.6
+  signed integer descriptor. Reads `n` bits as an unsigned `f(n)` value,
+  then reinterprets the top bit as a sign per the spec arithmetic
+  (`signMask = 1 << (n - 1); if (value & signMask) value -= 2 * signMask`)
+  — two's-complement sign extension of an `n`-bit field. This is the same
+  numeric mapping as the H.26x `i(n)` descriptor but is surfaced
+  separately so AV1 parsers can cite §4.10.6 directly; AV1 uses it for
+  `delta_q = su(1 + 6)` (§5.9.13) and the global-motion parameter reads
+  (§5.9.24). Accepts widths `1..=32`; `n == 32` round-trips the full
+  `i32` range including `i32::MIN`/`i32::MAX`. The reader rejects
+  `n == 0` (the `signMask` shift is undefined for a zero-bit signed
+  field) and `n > 32`; the writer rejects the same widths plus any value
+  outside the representable `-(2^(n-1)) .. 2^(n-1) - 1` range (no silent
+  truncation, so the round-trip is total for accepted inputs).
+
+  Five new reader unit tests pin the spec's two's-complement decode for
+  every raw pattern at widths `1..=8`, the §4.10.6 arithmetic example
+  (`su(4)` of `0b1011` → `-5`), the full-width-32 `i32` endpoints, the
+  `n == 1` `{0, -1}` alphabet, and the `n == 0` / `n > 32` rejections.
+  Six new writer unit tests mirror the full `i8` round-trip, the spec
+  example inverse (`-5` → `0b1011`), out-of-range and zero/oversize-width
+  rejections, the full-`i32`-at-width-32 round-trip, and an exhaustive
+  `1..=16` × full-range round-trip through the writer/reader pair. Three
+  new `roundtrip_props.rs` invariants extend that to a 1500-value random
+  round-trip per width `1..=32`, a per-width out-of-range rejection
+  sweep, and a cross-check that `su(n)` and `i(n)` agree numerically at
+  every bit offset for widths up to 24 (so a future divergence in either
+  decoder is caught). The reader fuzz harness now also drives `su(n)` on
+  attacker bytes every opcode-tape iteration and adds a structured
+  `write_su` → `su` round-trip on attacker-derived `(value, n)` pairs.
+
 - `BitReader::ns(n)` and `BitWriter::write_ns(value, n)` — AV1 §4.10.7
   non-symmetric unsigned integer descriptor. Outputs values in range
   `0..n`, emitting `FloorLog2(n)` bits for the lower part of the range

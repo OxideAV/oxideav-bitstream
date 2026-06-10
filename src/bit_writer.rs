@@ -154,6 +154,38 @@ impl BitWriter {
         Ok(())
     }
 
+    /// Write a signed integer as an `n`-bit AV1 `su(n)` field — the
+    /// inverse of [`BitReader::su`](crate::bit_reader::BitReader::su).
+    /// AV1 spec §4.10.6.
+    ///
+    /// `n` must be in `1..=32`; `value` must fit inside the
+    /// representable two's-complement range `-(2^(n-1)) .. 2^(n-1)`,
+    /// otherwise `InvalidData` is returned. `n == 32` accepts every
+    /// `i32`. The emitted bits are the bottom `n` bits of `value`'s
+    /// two's-complement representation — exactly what the §4.10.6
+    /// decoder reads back and sign-extends.
+    pub fn write_su(&mut self, value: i32, n: u32) -> Result<(), BitstreamError> {
+        if n == 0 || n > 32 {
+            return Err(BitstreamError::invalid(format!(
+                "write_su: n={n} outside 1..=32"
+            )));
+        }
+        if n < 32 {
+            let min = -(1i64 << (n - 1));
+            let max = (1i64 << (n - 1)) - 1;
+            let v = value as i64;
+            if v < min || v > max {
+                return Err(BitstreamError::invalid(format!(
+                    "write_su: value {value} outside representable {n}-bit range"
+                )));
+            }
+        }
+        let mask = if n == 32 { u32::MAX } else { (1u32 << n) - 1 };
+        let raw = (value as u32) & mask;
+        self.write_bits(raw, n);
+        Ok(())
+    }
+
     /// Write a signed value as `n` magnitude bits followed by a 1-bit
     /// sign (`1` = negative) — the inverse of
     /// [`BitReader::signed_magnitude`](crate::bit_reader::BitReader::signed_magnitude).
@@ -570,6 +602,68 @@ mod tests {
                 let mut r = BitReader::new(&bytes);
                 let got = r.ns(n).unwrap();
                 assert_eq!(got, value, "ns round-trip failed for n={n} value={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn write_su_roundtrips_full_eight_bit_range() {
+        // Every i8 value through write_su(_, 8) ↔ BitReader::su(8).
+        for v in i8::MIN..=i8::MAX {
+            let mut w = BitWriter::new();
+            w.write_su(v as i32, 8).unwrap();
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.su(8).unwrap(), v as i32);
+        }
+    }
+
+    #[test]
+    fn write_su_matches_spec_arithmetic_example() {
+        // su(4) of -5 must emit raw 0b1011 (the §4.10.6 example inverse).
+        let mut w = BitWriter::new();
+        w.write_su(-5, 4).unwrap();
+        assert_eq!(w.finish(), vec![0b1011_0000]);
+    }
+
+    #[test]
+    fn write_su_rejects_out_of_range_values() {
+        let mut w = BitWriter::new();
+        // 4-bit su range is [-8, 7].
+        assert!(w.write_su(8, 4).is_err());
+        assert!(w.write_su(-9, 4).is_err());
+    }
+
+    #[test]
+    fn write_su_accepts_full_i32_range_at_width_32() {
+        for &v in &[i32::MIN, -1, 0, 1, i32::MAX] {
+            let mut w = BitWriter::new();
+            w.write_su(v, 32).unwrap();
+            let bytes = w.finish();
+            let mut r = BitReader::new(&bytes);
+            assert_eq!(r.su(32).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn write_su_rejects_zero_and_oversize_widths() {
+        let mut w = BitWriter::new();
+        assert!(w.write_su(0, 0).is_err());
+        assert!(w.write_su(0, 33).is_err());
+    }
+
+    #[test]
+    fn su_roundtrips_every_value_for_widths_one_through_sixteen() {
+        // Exhaustive across the full representable range for n in 1..=16.
+        for n in 1u32..=16 {
+            let min = -(1i64 << (n - 1));
+            let max = (1i64 << (n - 1)) - 1;
+            for v in min..=max {
+                let mut w = BitWriter::new();
+                w.write_su(v as i32, n).unwrap();
+                let bytes = w.finish();
+                let mut r = BitReader::new(&bytes);
+                assert_eq!(r.su(n).unwrap(), v as i32, "su round-trip n={n} v={v}");
             }
         }
     }
