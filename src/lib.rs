@@ -26,7 +26,8 @@
 //! There is no shared cross-codec abstraction in v0 — each module
 //! exposes its own `parse_*` entry points and result structs. The
 //! shared [`bit_reader::BitReader`] type provides `u(n)`, `ue(v)`,
-//! `se(v)`, `i(n)`, `te(v)` and `ns(n)` primitives;
+//! `se(v)`, `i(n)`, `te(v)`, `ns(n)`, `su(n)`, `uvlc()` and `le(n)`
+//! primitives;
 //! [`bit_writer::BitWriter`] is its MSB-first inverse for emitting
 //! the same fields back out. Byte-level NAL
 //! framing helpers (the `emulation_prevention_three_byte` stripper

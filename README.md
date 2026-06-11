@@ -55,14 +55,14 @@ what's parsed today versus deferred.
 src/
 ├── lib.rs           # re-exports each codec module + BitstreamError
 ├── bit_reader.rs    # shared u(n) / u64(n) / ue(v) / se(v) / i(n) /
-│                    # te(v) / ns(n) / su(n) / signed_magnitude(n) /
-│                    # read_bytes
+│                    # te(v) / ns(n) / su(n) / uvlc() / le(n) /
+│                    # signed_magnitude(n) / read_bytes
 │                    # reader, peek_bits / peek_bits_u64,
 │                    # more_rbsp_data, read_rbsp_trailing_bits
 ├── bit_writer.rs    # MSB-first writer — inverse of bit_reader
 │                    # (write_bits / write_ue / write_se / write_i /
-│                    # write_te / write_ns / write_su /
-│                    # write_signed_magnitude / write_bytes)
+│                    # write_te / write_ns / write_su / write_uvlc /
+│                    # write_le / write_signed_magnitude / write_bytes)
 ├── nal.rs           # shared ebsp_to_rbsp + rbsp_to_ebsp (H.264 7.4.1.1 /
 │                    # H.265 7.4.1.1 / H.266 7.3.1.1 +7.4.2.1)
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
@@ -109,6 +109,8 @@ VCL specs use. Each pair is an exact round-trip inverse:
 | `te(v)` truncated Exp-Golomb | `te(x_max)`             | `write_te(value, x_max)`          | H.264 §9.1.2                   |
 | `ns(n)` non-symmetric unsigned (AV1 tile sizes / film-grain) | `ns(n)` | `write_ns(value, n)` | AV1 §4.10.7 |
 | `su(n)` signed integer from n bits (AV1 delta_q / global-motion) | `su(n)` | `write_su(value, n)` | AV1 §4.10.6 |
+| `uvlc()` unsigned variable-length code, total over `u32` — saturates to `u32::MAX` at 32+ leading zeros instead of erroring like `ue(v)` (AV1 timing_info) | `uvlc()` | `write_uvlc(value)` | AV1 §4.10.3 |
+| `le(n)` little-endian n-**byte** unsigned (AV1 tile sizes) | `le(n)` | `write_le(value, n)` | AV1 §4.10.4 |
 | Signed magnitude (`n` bits + 1 sign) | `signed_magnitude(n)` | `write_signed_magnitude` | VP9 §6.2.7 + legacy headers    |
 | Aligned byte slice  | `read_bytes(n)`                 | `write_bytes(&[u8])`              | (helper)                       |
 | `rbsp_trailing_bits()` marker | `read_rbsp_trailing_bits` | `write_rbsp_trailing_bits`        | H.264 §7.3.2.11 / H.265 §7.3.2.11 / H.266 §7.3.10 |

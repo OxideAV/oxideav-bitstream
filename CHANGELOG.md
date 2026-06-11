@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `BitReader::uvlc()` and `BitWriter::write_uvlc(value)` — AV1 §4.10.3
+  unsigned variable-length code, completing the §4.10 descriptor family
+  alongside the `le(n)` sibling below, `leb128` (§4.10.5), `su(n)`
+  (§4.10.6) and `ns(n)` (§4.10.7). Below `u32::MAX` the bit layout
+  coincides with the H.26x `ue(v)` Exp-Golomb code, but the descriptors
+  diverge at the top of the range: `ue(v)` rejects 32+ leading zeros as
+  a syntax error while `uvlc()` *saturates* to `u32::MAX`, consuming
+  the zero run through its terminating `1` bit and reading no suffix.
+  Both directions are therefore total — every `u32` encodes (the
+  saturation code is 32 zeros + the done bit, 33 bits) and every input
+  decodes, so neither side returns a `Result`. This promotes the
+  private `read_uvlc` helper previously buried in `av1.rs` (used by
+  `timing_info()`'s `num_ticks_per_picture_minus_1`) to the shared
+  descriptor surface, and fixes a positional divergence from the spec
+  in that helper: it stopped after the 32nd leading zero, whereas
+  §4.10.3 keeps consuming the run through the terminating bit — on a
+  (hypothetical) stream with a 33+-zero run every subsequent field
+  would have been misread. The shared reader follows the spec loop
+  exactly; a dedicated test pins the post-saturation bit position with
+  a sentinel field packed directly behind a 40-zero run.
+
+- `BitReader::le(n)` and `BitWriter::write_le(value, n)` — AV1 §4.10.4
+  unsigned little-endian `n`-**byte** number (the descriptor AV1 uses
+  for byte-aligned tile-size fields, `tile_size_minus_1` coded as
+  `le(TileSizeBytes)`). `n` counts bytes, not bits, and is capped at 8
+  so the result fits a `u64`; `n == 0` is the trivial zero-bit read.
+  The implementation is the spec's literal composition of `f(8)` reads
+  assembled least-significant-byte first, so it is position-agnostic
+  (the spec only employs it byte-aligned; callers wanting strictness
+  can assert `byte_aligned()` first). The writer rejects `n > 8` and
+  any value that does not fit in `n` bytes, with nothing appended on
+  rejection.
+
+  Test delta for the pair: 9 reader + 6 writer unit tests (known-value
+  tables, the §4.10.3 saturation + long-run positional pins,
+  end-of-stream run termination, little-endian assembly, unaligned
+  `f(8)`-composition equivalence, past-the-end zero padding, rejection
+  paths), 6 new `roundtrip_props.rs` invariants (uvlc round-trip over
+  boundary + random values, uvlc/ue bit-layout agreement below
+  saturation in both encode directions, the 33-bit saturation-code
+  position, `le` round-trips across every width × bit offset, `le` vs
+  `read_bytes` little-endian agreement, writer rejection hygiene), and
+  the reader fuzz harness now drives `uvlc()` / `le(n)` on attacker
+  bytes every opcode-tape iteration plus a structured `uvlc`+`le`
+  writer→reader round-trip stage.
+
 - `BitReader::su(n)` and `BitWriter::write_su(value, n)` — AV1 §4.10.6
   signed integer descriptor. Reads `n` bits as an unsigned `f(n)` value,
   then reinterprets the top bit as a sign per the spec arithmetic

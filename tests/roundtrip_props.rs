@@ -1861,3 +1861,139 @@ fn ns_writer_rejection_paths_leave_buffer_clean() {
     assert!(w.write_ns(0, (1u32 << 30) + 1).is_err());
     assert!(w.as_bytes().is_empty());
 }
+
+#[test]
+fn uvlc_roundtrips_across_range() {
+    // AV1 §4.10.3 uvlc(): every u32 has a code (the descriptor
+    // saturates at u32::MAX instead of erroring like ue). Concatenate
+    // boundary values plus random fields and read them back in order.
+    let mut values: Vec<u32> = vec![0, 1, 2, u32::MAX - 1, u32::MAX];
+    for k in 1..32u32 {
+        values.push((1u32 << k) - 2);
+        values.push((1u32 << k) - 1);
+        values.push(1u32 << k);
+    }
+    let mut rng = Lcg::new(0x4a4a_6b6b_8c8c_adad);
+    for _ in 0..2000 {
+        values.push(rng.next_u32());
+    }
+    let mut w = BitWriter::new();
+    for &v in &values {
+        w.write_uvlc(v);
+    }
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    for &v in &values {
+        assert_eq!(r.uvlc(), v, "uvlc round-trip of {v}");
+    }
+}
+
+#[test]
+fn uvlc_agrees_with_ue_below_saturation() {
+    // For values below u32::MAX the uvlc layout coincides with ue:
+    // bits written by either encoder must decode identically through
+    // the other decoder.
+    let mut rng = Lcg::new(0xbeef_5544_3322_1100);
+    for _ in 0..3000 {
+        let v = rng.next_u32();
+        let v = if v == u32::MAX { v - 1 } else { v };
+        let mut w = BitWriter::new();
+        w.write_ue(v).unwrap();
+        let bytes = w.finish();
+        let mut r_uvlc = BitReader::new(&bytes);
+        assert_eq!(r_uvlc.uvlc(), v, "uvlc decode of ue bits for {v}");
+        let mut r_ue = BitReader::new(&bytes);
+        assert_eq!(r_ue.ue().unwrap(), v);
+
+        let mut w = BitWriter::new();
+        w.write_uvlc(v);
+        let bytes = w.finish();
+        let mut r_ue = BitReader::new(&bytes);
+        assert_eq!(r_ue.ue().unwrap(), v, "ue decode of uvlc bits for {v}");
+    }
+}
+
+#[test]
+fn uvlc_saturation_code_is_positionally_exact() {
+    // The u32::MAX code is 32 zeros + the done bit (33 bits). Pack a
+    // sentinel field right behind it and confirm the reader lands on
+    // it exactly — i.e. the saturation path consumes the zero run
+    // through the done bit and no suffix.
+    let mut w = BitWriter::new();
+    w.write_uvlc(u32::MAX);
+    w.write_bits(0b1011_0111, 8);
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    assert_eq!(r.uvlc(), u32::MAX);
+    assert_eq!(r.bit_pos(), 33);
+    assert_eq!(r.u(8), 0b1011_0111);
+}
+
+#[test]
+fn le_roundtrips_every_width_and_bit_offset() {
+    // AV1 §4.10.4 le(n): for every byte width 0..=8 and every prefix
+    // bit offset 0..8, write_le then le must reproduce the value (the
+    // descriptor is a pure composition of 8-bit fields, so it works
+    // unaligned even though the spec only uses it byte-aligned).
+    let mut rng = Lcg::new(0x0f0f_e1e1_d2d2_c3c3);
+    for n in 0..=8u32 {
+        let mask = if n >= 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * n)) - 1
+        };
+        for prefix in 0..8u32 {
+            for _ in 0..400 {
+                let v = rng.next_u64() & mask;
+                let mut w = BitWriter::new();
+                if prefix > 0 {
+                    w.write_bits(rng.next_u32(), prefix);
+                }
+                w.write_le(v, n).unwrap();
+                assert_eq!(w.bit_pos(), (prefix + 8 * n) as usize);
+                let bytes = w.finish();
+                let mut r = BitReader::new(&bytes);
+                if prefix > 0 {
+                    let _ = r.u(prefix);
+                }
+                assert_eq!(r.le(n).unwrap(), v, "le round-trip n={n} prefix={prefix}");
+                assert_eq!(r.bit_pos(), (prefix + 8 * n) as usize);
+            }
+        }
+    }
+}
+
+#[test]
+fn le_agrees_with_aligned_read_bytes() {
+    // On a byte-aligned reader, le(n) must equal the little-endian
+    // assembly of read_bytes(n) — two independent paths over the same
+    // bytes.
+    let mut rng = Lcg::new(0x7777_8888_9999_aaaa);
+    let bytes: Vec<u8> = (0..64).map(|_| (rng.next_u32() & 0xff) as u8).collect();
+    for start in 0..(bytes.len() - 8) {
+        for n in 0..=8u32 {
+            let mut r_le = BitReader::new(&bytes);
+            r_le.skip(start * 8);
+            let got = r_le.le(n).unwrap();
+            let mut r_b = BitReader::new(&bytes);
+            r_b.skip(start * 8);
+            let slice = r_b.read_bytes(n as usize).unwrap();
+            let mut expected = 0u64;
+            for (i, &b) in slice.iter().enumerate() {
+                expected |= (b as u64) << (8 * i);
+            }
+            assert_eq!(got, expected, "le/read_bytes mismatch start={start} n={n}");
+        }
+    }
+}
+
+#[test]
+fn le_writer_rejection_paths_leave_buffer_clean() {
+    // Oversize value, oversize width, and the n == 0 nonzero-value
+    // case must all reject without flushing partial bits.
+    let mut w = BitWriter::new();
+    assert!(w.write_le(1u64 << 8, 1).is_err());
+    assert!(w.write_le(0, 9).is_err());
+    assert!(w.write_le(1, 0).is_err());
+    assert!(w.as_bytes().is_empty());
+}

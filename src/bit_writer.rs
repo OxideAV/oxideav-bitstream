@@ -291,6 +291,61 @@ impl BitWriter {
         Ok(())
     }
 
+    /// Write an unsigned variable-length code — the inverse of
+    /// [`BitReader::uvlc`](crate::bit_reader::BitReader::uvlc). AV1
+    /// spec §4.10.3.
+    ///
+    /// For values below `u32::MAX` the emitted bits are the same
+    /// Exp-Golomb layout as [`BitWriter::write_ue`]. `u32::MAX` — the
+    /// one value `write_ue` must reject — *is* representable here: the
+    /// §4.10.3 decoder saturates to `(1 << 32) - 1` whenever it counts
+    /// 32 or more leading zeros, so the canonical (shortest) encoding
+    /// is 32 zero bits followed by the terminating `1` bit, with no
+    /// suffix. Every `u32` therefore has a code and this writer is
+    /// infallible.
+    pub fn write_uvlc(&mut self, value: u32) {
+        if value == u32::MAX {
+            for _ in 0..32 {
+                self.write_bit(0);
+            }
+            self.write_bit(1);
+            return;
+        }
+        let code_num = value + 1; // ≥ 1, so it has a defined MSB.
+        let bits = 32 - code_num.leading_zeros();
+        for _ in 0..(bits - 1) {
+            self.write_bit(0);
+        }
+        self.write_bits(code_num, bits);
+    }
+
+    /// Write an unsigned value as `n` little-endian **bytes** — the
+    /// inverse of [`BitReader::le`](crate::bit_reader::BitReader::le).
+    /// AV1 spec §4.10.4.
+    ///
+    /// Emits `n` groups of 8 bits, least-significant byte first. `n`
+    /// must be ≤ 8 (the `u64` envelope) and `value` must fit in `n`
+    /// bytes (`value < 2^(8n)`), otherwise `InvalidData` is returned
+    /// with nothing appended. `n == 0` accepts only `value == 0` and
+    /// emits nothing. Like the reader, no byte-alignment is enforced —
+    /// the encoding is a composition of 8-bit field writes.
+    pub fn write_le(&mut self, value: u64, n: u32) -> Result<(), BitstreamError> {
+        if n > 8 {
+            return Err(BitstreamError::invalid(format!(
+                "write_le: n={n} bytes exceeds the u64-representable 8"
+            )));
+        }
+        if n < 8 && value >= (1u64 << (8 * n)) {
+            return Err(BitstreamError::invalid(format!(
+                "write_le: value {value} does not fit in {n} bytes"
+            )));
+        }
+        for i in 0..n {
+            self.write_bits(((value >> (8 * i)) & 0xff) as u32, 8);
+        }
+        Ok(())
+    }
+
     /// Append a byte slice. The writer must be byte-aligned; otherwise
     /// returns `InvalidData`. The matching reader is
     /// [`BitReader::read_bytes`](crate::bit_reader::BitReader::read_bytes).
@@ -650,6 +705,90 @@ mod tests {
         let mut w = BitWriter::new();
         assert!(w.write_su(0, 0).is_err());
         assert!(w.write_su(0, 33).is_err());
+    }
+
+    #[test]
+    fn write_uvlc_roundtrips_small_values() {
+        let mut w = BitWriter::new();
+        for v in 0..=10u32 {
+            w.write_uvlc(v);
+        }
+        let bytes = w.finish();
+        let mut r = BitReader::new(&bytes);
+        for v in 0..=10u32 {
+            assert_eq!(r.uvlc(), v);
+        }
+    }
+
+    #[test]
+    fn write_uvlc_max_emits_32_zeros_then_done_bit() {
+        // The saturation code: 32 zeros + terminating 1 = 33 bits.
+        let mut w = BitWriter::new();
+        w.write_uvlc(u32::MAX);
+        assert_eq!(w.bit_pos(), 33);
+        let bytes = w.finish();
+        assert_eq!(bytes, vec![0x00, 0x00, 0x00, 0x00, 0x80]);
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), u32::MAX);
+        assert_eq!(r.bit_pos(), 33);
+    }
+
+    #[test]
+    fn write_uvlc_matches_write_ue_below_max() {
+        // For every value write_ue accepts, the two encoders must emit
+        // identical bits (uvlc's layout coincides with ue below the
+        // saturation point).
+        for v in [0u32, 1, 2, 7, 8, 255, 256, 65535, u32::MAX - 1] {
+            let mut w_ue = BitWriter::new();
+            w_ue.write_ue(v).unwrap();
+            let mut w_uvlc = BitWriter::new();
+            w_uvlc.write_uvlc(v);
+            assert_eq!(
+                w_ue.finish(),
+                w_uvlc.finish(),
+                "ue/uvlc encoding mismatch for {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn write_le_emits_little_endian_bytes() {
+        let mut w = BitWriter::new();
+        w.write_le(0x0403_0201, 4).unwrap();
+        assert_eq!(w.finish(), vec![0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn write_le_roundtrips_every_width() {
+        // One in-range sample per width 0..=8, plus the per-width max.
+        for n in 0u32..=8 {
+            let max = if n >= 8 {
+                u64::MAX
+            } else {
+                (1u64 << (8 * n)) - 1
+            };
+            for v in [0u64, max / 3, max] {
+                let mut w = BitWriter::new();
+                w.write_le(v, n).unwrap();
+                let bytes = w.finish();
+                let mut r = BitReader::new(&bytes);
+                assert_eq!(r.le(n).unwrap(), v, "le round-trip n={n} v={v}");
+            }
+        }
+    }
+
+    #[test]
+    fn write_le_rejects_oversize_value_and_width() {
+        let mut w = BitWriter::new();
+        // Value does not fit in n bytes.
+        assert!(w.write_le(0x100, 1).is_err());
+        // n == 0 accepts only value 0.
+        assert!(w.write_le(1, 0).is_err());
+        w.write_le(0, 0).unwrap();
+        // Width beyond the u64 envelope.
+        assert!(w.write_le(0, 9).is_err());
+        // Failure paths must not append anything.
+        assert!(w.as_bytes().is_empty());
     }
 
     #[test]

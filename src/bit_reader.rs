@@ -457,6 +457,92 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// `uvlc()` — unsigned variable-length code. AV1 spec §4.10.3.
+    ///
+    /// Algorithm (restated from §4.10.3):
+    ///
+    /// ```text
+    /// leadingZeros = 0
+    /// while (1) {
+    ///     done = f(1)
+    ///     if (done) break
+    ///     leadingZeros++
+    /// }
+    /// if (leadingZeros >= 32)
+    ///     return (1 << 32) - 1
+    /// value = f(leadingZeros)
+    /// return value + (1 << leadingZeros) - 1
+    /// ```
+    ///
+    /// For values below `u32::MAX` the bit layout coincides with the
+    /// H.26x `ue(v)` Exp-Golomb code, but the two descriptors diverge
+    /// at the top of the range: `ue(v)` treats 32+ leading zeros as a
+    /// syntax error, while `uvlc()` *saturates* to `u32::MAX` — the
+    /// zero run is consumed through its terminating `1` bit and no
+    /// suffix bits are read. `uvlc()` is therefore total (every input
+    /// decodes) and returns a plain `u32`. AV1 uses it in
+    /// `timing_info()` (`num_ticks_per_picture_minus_1`).
+    ///
+    /// If the stream ends before a terminating `1` bit is seen, the
+    /// run is treated as terminated at end-of-stream; any suffix bits
+    /// then read as zero per the reader's past-the-end convention (so
+    /// an all-zero 4-byte tail still saturates to `u32::MAX`, and an
+    /// empty reader decodes to 0).
+    pub fn uvlc(&mut self) -> u32 {
+        let mut leading_zeros = 0u32;
+        while !self.at_end() {
+            if self.read_bit() == 1 {
+                break;
+            }
+            leading_zeros += 1;
+        }
+        if leading_zeros >= 32 {
+            return u32::MAX;
+        }
+        let value = self.u(leading_zeros);
+        value + (1u32 << leading_zeros) - 1
+    }
+
+    /// `le(n)` — unsigned little-endian `n`-**byte** number. AV1 spec
+    /// §4.10.4.
+    ///
+    /// Reads `n` groups of 8 bits via `f(8)` and assembles them
+    /// least-significant byte first:
+    ///
+    /// ```text
+    /// t = 0
+    /// for (i = 0; i < n; i++) {
+    ///     byte = f(8)
+    ///     t += (byte << (i * 8))
+    /// }
+    /// return t
+    /// ```
+    ///
+    /// `n` counts **bytes** (unlike the bit-counted descriptors) and
+    /// must be ≤ 8 so the result fits a `u64`; larger `n` returns
+    /// `InvalidData`. `n == 0` is the trivial zero-bit read and
+    /// returns 0 without advancing. AV1 uses `le(n)` for the
+    /// byte-aligned tile-size fields (`tile_size_minus_1` is coded as
+    /// `le(TileSizeBytes)`); the spec only employs it at byte-aligned
+    /// positions, but the descriptor itself is position-agnostic
+    /// (it is a composition of `f(8)` reads), so no alignment check
+    /// is enforced here — callers wanting strictness can assert
+    /// [`BitReader::byte_aligned`] first. Past-the-end bytes read as
+    /// zero per the reader's convention.
+    pub fn le(&mut self, n: u32) -> Result<u64, BitstreamError> {
+        if n > 8 {
+            return Err(BitstreamError::InvalidData(format!(
+                "le(n): n={n} bytes exceeds the u64-representable 8"
+            )));
+        }
+        let mut t: u64 = 0;
+        for i in 0..n {
+            let byte = self.u(8) as u64;
+            t |= byte << (8 * i);
+        }
+        Ok(t)
+    }
+
     /// Read `n` aligned bytes into a borrowed slice. The reader must be
     /// byte-aligned at entry; otherwise an `InvalidData` is returned
     /// (callers should `align_to_byte()` first or use the bit-level
@@ -1011,5 +1097,107 @@ mod tests {
         let mut r = BitReader::new(&bytes);
         assert!(matches!(r.su(0), Err(BitstreamError::InvalidData(_))));
         assert!(matches!(r.su(33), Err(BitstreamError::InvalidData(_))));
+    }
+
+    #[test]
+    fn uvlc_decodes_known_values() {
+        // Below the saturation point uvlc shares ue's bit layout:
+        // codes for 0,1,2,3 are 1 010 011 00100 → 0b1010_0110 0b0100_0000.
+        let bytes = [0b1010_0110, 0b0100_0000];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), 0);
+        assert_eq!(r.uvlc(), 1);
+        assert_eq!(r.uvlc(), 2);
+        assert_eq!(r.uvlc(), 3);
+    }
+
+    #[test]
+    fn uvlc_saturates_at_32_leading_zeros() {
+        // 32 zero bits then the terminating 1 → §4.10.3 saturation to
+        // u32::MAX, consuming exactly 33 bits and reading no suffix.
+        let bytes = [0x00, 0x00, 0x00, 0x00, 0x80];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), u32::MAX);
+        assert_eq!(r.bit_pos(), 33);
+    }
+
+    #[test]
+    fn uvlc_consumes_long_zero_runs_through_done_bit() {
+        // 40 zero bits then the terminating 1: the spec loop keeps
+        // consuming until the done bit, so the reader must land at bit
+        // 41, not stop after the 32nd zero.
+        let bytes = [0x00, 0x00, 0x00, 0x00, 0x00, 0x80];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), u32::MAX);
+        assert_eq!(r.bit_pos(), 41);
+    }
+
+    #[test]
+    fn uvlc_treats_end_of_stream_as_run_terminator() {
+        // 8 zero bits then EOF: run terminates at end-of-stream with
+        // leadingZeros = 8; the suffix reads past-the-end zeros, so the
+        // value is (1 << 8) - 1.
+        let bytes = [0x00];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), 255);
+        // 32+ zeros before EOF still saturates.
+        let bytes = [0x00, 0x00, 0x00, 0x00];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), u32::MAX);
+        assert_eq!(r.bit_pos(), 32);
+        // An empty reader decodes to 0 (zero-length run, zero suffix).
+        let bytes: [u8; 0] = [];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.uvlc(), 0);
+    }
+
+    #[test]
+    fn le_assembles_little_endian_bytes() {
+        let bytes = [0x01, 0x02, 0x03, 0x04];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.le(4).unwrap(), 0x0403_0201);
+        assert_eq!(r.bit_pos(), 32);
+        // n == 0 is the trivial read: value 0, no advance.
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.le(0).unwrap(), 0);
+        assert_eq!(r.bit_pos(), 0);
+    }
+
+    #[test]
+    fn le_full_width_eight_bytes_fills_u64() {
+        let bytes = [0xf0, 0xde, 0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.le(8).unwrap(), 0x1234_5678_9abc_def0);
+    }
+
+    #[test]
+    fn le_is_position_agnostic_composition_of_f8() {
+        // At a 4-bit offset le(2) must equal two u(8) reads assembled
+        // LSB-first — the §4.10.4 loop is pure f(8) composition.
+        let bytes = [0xab, 0xcd, 0xef];
+        let mut r = BitReader::new(&bytes);
+        r.skip(4);
+        let got = r.le(2).unwrap();
+        let mut r2 = BitReader::new(&bytes);
+        r2.skip(4);
+        let b0 = r2.u(8) as u64;
+        let b1 = r2.u(8) as u64;
+        assert_eq!(got, b0 | (b1 << 8));
+    }
+
+    #[test]
+    fn le_past_end_reads_zero_bytes() {
+        let bytes = [0xff];
+        let mut r = BitReader::new(&bytes);
+        assert_eq!(r.le(2).unwrap(), 0x00ff);
+    }
+
+    #[test]
+    fn le_rejects_n_above_eight() {
+        let bytes = [0xff; 16];
+        let mut r = BitReader::new(&bytes);
+        assert!(matches!(r.le(9), Err(BitstreamError::InvalidData(_))));
+        // Position untouched on the rejection path.
+        assert_eq!(r.bit_pos(), 0);
     }
 }

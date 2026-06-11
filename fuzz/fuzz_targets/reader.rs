@@ -91,6 +91,12 @@ fuzz_target!(|data: &[u8]| {
     //     §4.10.6 signed descriptor; assert write_su followed by su
     //     reproduces each value on attacker-derived (value, n) pairs.
     su_writer_roundtrip(data);
+
+    // 11. uvlc / le(n) writer -> reader round-trips. write_uvlc is
+    //     total over u32 (§4.10.3 saturation at u32::MAX); write_le
+    //     covers byte widths 0..=8 (§4.10.4). Both inverse pairs are
+    //     exercised on attacker-derived values.
+    uvlc_le_writer_roundtrip(data);
 });
 
 /// Treat `data` as an opcode tape and a payload simultaneously, running
@@ -161,6 +167,14 @@ fn drive_reader(data: &[u8]) {
                 // bytes drive it too. Past-end reads must not panic.
                 let sn = (op as u32 % 32) + 1;
                 let _ = r.su(sn);
+                // uvlc() (§4.10.3) is total — it must return a value
+                // (never panic, never loop) on any byte tail, including
+                // all-zero runs and EOF mid-run.
+                let _ = r.uvlc();
+                // le(n) (§4.10.4) with attacker-driven byte widths
+                // 0..=8; past-end bytes read as zero.
+                let ln = (op as u32 >> 4) % 9;
+                let _ = r.le(ln);
             }
         }
     }
@@ -465,5 +479,44 @@ fn su_writer_roundtrip(data: &[u8]) {
     for (value, n) in fields {
         let got = r.su(n).expect("legal (value, n) decodes");
         assert_eq!(got, value, "su round-trip mismatch n={n} value={value}");
+    }
+}
+
+/// Carve `data` into 5-byte chunks and exercise the AV1 §4.10.3
+/// `uvlc()` and §4.10.4 `le(n)` writer / reader inverse-pairs. Each
+/// chunk yields one uvlc value (4 bytes, the full u32 range including
+/// the u32::MAX saturation code) and one `(value, n)` le pair (the
+/// same 4 bytes masked into `n` bytes, with `n` from the 5th byte).
+fn uvlc_le_writer_roundtrip(data: &[u8]) {
+    let mut w = BitWriter::new();
+    let mut fields: Vec<(u32, u64, u32)> = Vec::new();
+    for chunk in data.chunks_exact(5) {
+        if fields.len() >= 256 {
+            break;
+        }
+        let uvlc_v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let n = chunk[4] as u32 % 9; // 0..=8 bytes
+        let mask = if n >= 8 {
+            u64::MAX
+        } else {
+            (1u64 << (8 * n)) - 1
+        };
+        let le_v = (uvlc_v as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) & mask;
+        w.write_uvlc(uvlc_v);
+        w.write_le(le_v, n).expect("masked value fits n bytes");
+        fields.push((uvlc_v, le_v, n));
+    }
+    if fields.is_empty() {
+        return;
+    }
+    let bytes = w.finish();
+    let mut r = BitReader::new(&bytes);
+    for (uvlc_v, le_v, n) in fields {
+        assert_eq!(r.uvlc(), uvlc_v, "uvlc round-trip mismatch");
+        assert_eq!(
+            r.le(n).expect("n <= 8"),
+            le_v,
+            "le round-trip mismatch n={n}"
+        );
     }
 }

@@ -436,7 +436,8 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
             let _time_scale = r.u(32);
             let equal_picture_interval = r.u(1) != 0;
             if equal_picture_interval {
-                let _num_ticks_per_picture_minus_1 = read_uvlc(&mut r)?;
+                // uvlc() per §4.10.3 — shared BitReader descriptor.
+                let _num_ticks_per_picture_minus_1 = r.uvlc();
             }
             let decoder_model_info_present_flag = r.u(1) != 0;
             if decoder_model_info_present_flag {
@@ -588,23 +589,6 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
     s.film_grain_params_present = r.u(1) != 0;
     // trailing_bits handled by caller (we just stop reading).
     Ok(s)
-}
-
-/// 4.10.4 unsigned variable-length code (UVLC). Used in `timing_info()`.
-fn read_uvlc(r: &mut BitReader<'_>) -> Result<u32, BitstreamError> {
-    let mut leading_zeros = 0u32;
-    while !r.at_end() {
-        if r.u(1) != 0 {
-            break;
-        }
-        leading_zeros += 1;
-        if leading_zeros >= 32 {
-            // spec says leadingZeros >= 32 → return 0xFFFFFFFF
-            return Ok(u32::MAX);
-        }
-    }
-    let value = r.u(leading_zeros);
-    Ok(value + (1u32 << leading_zeros) - 1)
 }
 
 // ─────────────────────────── Frame header parser ─────────────────────────────
