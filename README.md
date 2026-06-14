@@ -125,6 +125,28 @@ walks a complete Annex-B / OBU stream, finds the first
 IDR / keyframe access unit, and returns the parsed parameters
 plus a slice (or set of slices) of bytes the HW decoder consumes.
 
+## Fuzzing
+
+`fuzz/` holds two `cargo fuzz` panic-hardening targets. Because this
+crate parses attacker-controlled bitstream bytes to populate GPU
+parameter buffers, every entry point must return `Ok` / `Err` — never
+panic, overflow, slice out of bounds, or loop unboundedly — on *any*
+input.
+
+- `reader` — hammers the foundational `BitReader` / `BitWriter`
+  primitives (`u(n)` / `u64(n)` / `ue` / `se` / `ns` / `su` / `uvlc` /
+  `le` / skips / peeks) plus the AV1 LEB128 / OBU walkers and the IVF
+  demuxer, and fuzzes the writer→reader round-trip invariant.
+- `parsers` — drives the per-codec header parsers (H.264, HEVC, H.266,
+  MPEG-2, VC-1, VP8, VP9) at multiple input-derived byte offsets, and
+  feeds the context-dependent slice / picture / entry-point parsers an
+  SPS / PPS / sequence-header context recovered from a prefix of the
+  same input. It found a panic where a malformed H.264 / HEVC SPS with
+  an out-of-range `log2_max_frame_num_minus4` /
+  `log2_max_pic_order_cnt_lsb_minus4` drove a `>32`-bit `BitReader::u`
+  read in the slice-header parser; the SPS parsers now reject those
+  values per H.264 §7.4.2.1.1 / H.265 §7.4.3.2.1.
+
 ## No `unsafe`
 
 This crate contains zero `unsafe` blocks. Bit reading is software,

@@ -319,11 +319,30 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<H264Sps, BitstreamError> {
         sps.chroma_format_idc = 1; // implicit 4:2:0
     }
 
-    sps.log2_max_frame_num_minus4 = r.ue()? as u8;
+    // H.264 §7.4.2.1.1 constrains log2_max_frame_num_minus4 to 0..=12
+    // (frame_num is read as u(log2_max_frame_num_minus4 + 4), i.e. at
+    // most 16 bits). A malformed SPS with a larger value would later
+    // drive `BitReader::u(n > 32)` in the slice-header parser, so
+    // reject it here rather than letting it propagate.
+    let log2_max_frame_num_minus4 = r.ue()?;
+    if log2_max_frame_num_minus4 > 12 {
+        return Err(BitstreamError::invalid(format!(
+            "SPS log2_max_frame_num_minus4={log2_max_frame_num_minus4} (must be 0..=12)"
+        )));
+    }
+    sps.log2_max_frame_num_minus4 = log2_max_frame_num_minus4 as u8;
     sps.pic_order_cnt_type = r.ue()? as u8;
     match sps.pic_order_cnt_type {
         0 => {
-            sps.log2_max_pic_order_cnt_lsb_minus4 = r.ue()? as u8;
+            // §7.4.2.1.1 likewise constrains log2_max_pic_order_cnt_lsb_minus4
+            // to 0..=12 (pic_order_cnt_lsb is u(value + 4), at most 16 bits).
+            let log2_max_poc_lsb_minus4 = r.ue()?;
+            if log2_max_poc_lsb_minus4 > 12 {
+                return Err(BitstreamError::invalid(format!(
+                    "SPS log2_max_pic_order_cnt_lsb_minus4={log2_max_poc_lsb_minus4} (must be 0..=12)"
+                )));
+            }
+            sps.log2_max_pic_order_cnt_lsb_minus4 = log2_max_poc_lsb_minus4 as u8;
         }
         1 => {
             sps.delta_pic_order_always_zero_flag = r.u(1) != 0;
@@ -784,6 +803,63 @@ mod tests {
                 err,
                 BitstreamError::InvalidData(_) | BitstreamError::UnexpectedEnd(_)
             ),
+            "got: {err:?}"
+        );
+    }
+
+    /// Build a minimal baseline-profile SPS RBSP with the given
+    /// `log2_max_frame_num_minus4` value and `pic_order_cnt_type = 2`
+    /// (so no further POC fields are read). Used to exercise the
+    /// out-of-range guard without needing a full valid SPS.
+    fn baseline_sps_with_log2_max_frame_num(log2_max_frame_num_minus4: u32) -> Vec<u8> {
+        let mut w = crate::bit_writer::BitWriter::new();
+        w.write_bits(66, 8); // profile_idc = 66 (baseline, no high-profile ext)
+        w.write_bits(0, 8); // constraint_set_flags
+        w.write_bits(0, 8); // level_idc
+        w.write_ue(0).unwrap(); // seq_parameter_set_id
+        w.write_ue(log2_max_frame_num_minus4).unwrap();
+        w.write_ue(2).unwrap(); // pic_order_cnt_type = 2 (no extra POC fields)
+        w.finish()
+    }
+
+    #[test]
+    fn parse_sps_accepts_max_log2_max_frame_num() {
+        // log2_max_frame_num_minus4 = 12 is the spec maximum (§7.4.2.1.1).
+        let rbsp = baseline_sps_with_log2_max_frame_num(12);
+        let sps = parse_sps(&rbsp).expect("log2_max_frame_num_minus4=12 is in range");
+        assert_eq!(sps.log2_max_frame_num_minus4, 12);
+    }
+
+    #[test]
+    fn parse_sps_rejects_oversized_log2_max_frame_num() {
+        // log2_max_frame_num_minus4 = 13 would make frame_num a u(17)
+        // read in the slice-header parser, which panics in BitReader::u.
+        // The SPS parser must reject it up front.
+        let rbsp = baseline_sps_with_log2_max_frame_num(13);
+        let err = parse_sps(&rbsp).expect_err("log2_max_frame_num_minus4=13 is out of range");
+        assert!(
+            matches!(err, BitstreamError::InvalidData(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_sps_rejects_oversized_log2_max_pic_order_cnt_lsb() {
+        // Baseline SPS with pic_order_cnt_type = 0 and an out-of-range
+        // log2_max_pic_order_cnt_lsb_minus4 = 13.
+        let mut w = crate::bit_writer::BitWriter::new();
+        w.write_bits(66, 8); // profile_idc = 66
+        w.write_bits(0, 8); // constraint_set_flags
+        w.write_bits(0, 8); // level_idc
+        w.write_ue(0).unwrap(); // seq_parameter_set_id
+        w.write_ue(4).unwrap(); // log2_max_frame_num_minus4 (in range)
+        w.write_ue(0).unwrap(); // pic_order_cnt_type = 0
+        w.write_ue(13).unwrap(); // log2_max_pic_order_cnt_lsb_minus4 (out of range)
+        let rbsp = w.finish();
+        let err =
+            parse_sps(&rbsp).expect_err("log2_max_pic_order_cnt_lsb_minus4=13 is out of range");
+        assert!(
+            matches!(err, BitstreamError::InvalidData(_)),
             "got: {err:?}"
         );
     }

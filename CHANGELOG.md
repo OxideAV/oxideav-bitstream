@@ -7,7 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- H.264 / HEVC SPS parsers now reject an out-of-range
+  `log2_max_frame_num_minus4` (H.264) and
+  `log2_max_pic_order_cnt_lsb_minus4` (H.264 / HEVC) with
+  `InvalidData`. The respective specs (H.264 §7.4.2.1.1,
+  H.265 §7.4.3.2.1) constrain both to `0..=12`, so the dependent
+  `frame_num` / `pic_order_cnt_lsb` fields are at most 16 bits. A
+  malformed SPS carrying a larger value previously slipped through SPS
+  parsing and then drove `BitReader::u(n > 32)` inside
+  `parse_slice_header_minimal`, panicking the host application on a
+  hostile fixture. Both fields are now validated at the SPS parse site,
+  mirroring the existing H.266 bound on
+  `sps_log2_max_pic_order_cnt_lsb_minus4`. Found by the new `parsers`
+  fuzz target.
+
 ### Added
+
+- `parsers` fuzz target (`fuzz/fuzz_targets/parsers.rs`) — a second
+  panic-hardening harness covering the per-codec header *parsers* (the
+  layer above the `BitReader` / `BitWriter` primitives the `reader`
+  target already hammers). It drives every context-free `parse_*` entry
+  point of the H.264, HEVC, H.266, MPEG-2, VC-1, VP8 and VP9 modules at
+  several input-derived byte offsets, and feeds the context-dependent
+  slice / picture / entry-point parsers an SPS / PPS / sequence-header
+  context recovered from a prefix of the same input. The invariant under
+  test is purely "no panic, no overflow, no out-of-bounds, no unbounded
+  loop on any byte sequence." It immediately surfaced the SPS-width
+  panic fixed above.
 
 - `BitReader::uvlc()` and `BitWriter::write_uvlc(value)` — AV1 §4.10.3
   unsigned variable-length code, completing the §4.10 descriptor family

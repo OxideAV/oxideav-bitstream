@@ -449,7 +449,18 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
     }
     sps.bit_depth_luma_minus8 = r.ue()? as u8;
     sps.bit_depth_chroma_minus8 = r.ue()? as u8;
-    sps.log2_max_pic_order_cnt_lsb_minus4 = r.ue()? as u8;
+    // H.265 §7.4.3.2.1 constrains log2_max_pic_order_cnt_lsb_minus4 to
+    // 0..=12 (slice_pic_order_cnt_lsb is read as u(value + 4), i.e. at
+    // most 16 bits). A larger value from a malformed SPS would later
+    // drive `BitReader::u(n > 32)` in the slice-header parser, so reject
+    // it here.
+    let log2_max_poc_lsb_minus4 = r.ue()?;
+    if log2_max_poc_lsb_minus4 > 12 {
+        return Err(BitstreamError::invalid(format!(
+            "SPS log2_max_pic_order_cnt_lsb_minus4={log2_max_poc_lsb_minus4} (must be 0..=12)"
+        )));
+    }
+    sps.log2_max_pic_order_cnt_lsb_minus4 = log2_max_poc_lsb_minus4 as u8;
 
     let sps_sub_layer_ordering_info_present_flag = r.u(1);
     let start = if sps_sub_layer_ordering_info_present_flag != 0 {
