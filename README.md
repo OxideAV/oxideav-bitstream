@@ -166,10 +166,9 @@ relevant spec PDFs:
 - RFC 6386 (VP8 Data Format and Decoding Guide).
 
 Following a public spec PDF is the canonical clean-room move and is
-allowed under the workspace policy. We deliberately do **not** consult
-ffmpeg / libavcodec, x264, x265, libde265, libaom, dav1d, rav1e or
-libgav1 source. ffmpeg and aomenc are used only as black-box CLI tools
-to generate test fixtures.
+allowed under the workspace policy. No third-party codec source is
+consulted; external encoders are used only as black-box CLI tools to
+generate test fixtures.
 
 ## License
 
