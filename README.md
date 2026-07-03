@@ -1,5 +1,7 @@
 # oxideav-bitstream
 
+[![CI](https://github.com/OxideAV/oxideav-bitstream/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-bitstream/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-bitstream.svg)](https://crates.io/crates/oxideav-bitstream) [![docs.rs](https://docs.rs/oxideav-bitstream/badge.svg)](https://docs.rs/oxideav-bitstream) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Minimal IDR / keyframe header parsing for H.264, HEVC and AV1, used by the
 [oxideav](https://github.com/OxideAV/oxideav) framework's hardware-accel
 bridge crates ([`oxideav-vaapi`](https://github.com/OxideAV/oxideav-vaapi),
