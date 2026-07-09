@@ -47,6 +47,29 @@ fn baseline_parses_via_idr_only_and_dimensions_match() {
 
     // PPS.
     assert_eq!(parsed.pps.num_slice_groups_minus1, 0);
+
+    // VUI (Annex E) — the fixture signals square samples, 1 fps
+    // timing (a single-frame encode) and a bitstream-restriction
+    // block.
+    let vui = parsed.sps.vui.as_ref().expect("baseline fixture has VUI");
+    assert_eq!(vui.aspect_ratio_idc, 1, "square SAR (Table E-1 idc 1)");
+    assert_eq!(vui.sample_aspect_ratio(), Some((1, 1)));
+    assert!(vui.timing_info_present_flag);
+    assert_eq!(vui.num_units_in_tick, 1);
+    assert_eq!(vui.time_scale, 2);
+    // frame rate = time_scale / (2 * num_units_in_tick) = 1 fps.
+    assert_eq!(vui.frame_rate(), Some((2, 2)));
+    assert!(vui.nal_hrd_parameters.is_none());
+    assert!(vui.vcl_hrd_parameters.is_none());
+    assert!(vui.bitstream_restriction_flag);
+    assert!(vui.motion_vectors_over_pic_boundaries_flag);
+    assert_eq!(vui.log2_max_mv_length_horizontal, 9);
+    assert_eq!(vui.log2_max_mv_length_vertical, 9);
+    assert_eq!(vui.max_num_reorder_frames, 0);
+    assert_eq!(vui.max_dec_frame_buffering, 1);
+
+    // No scaling matrix on the baseline fixture.
+    assert!(parsed.sps.seq_scaling_lists.is_none());
 }
 
 #[test]

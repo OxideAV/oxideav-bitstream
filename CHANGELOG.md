@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- h264: complete SPS parse — scaling lists (§7.3.2.1.1.1 `scaling_list()`
+  with `UseDefaultScalingMatrixFlag` and freeze-after-zero semantics) and
+  full VUI/HRD (Annex E §E.1.1/§E.1.2: aspect ratio incl. Extended_SAR,
+  overscan, video signal type + colour description, chroma loc, timing
+  info, NAL/VCL HRD with CPB schedule entries, low-delay flag,
+  pic_struct, bitstream restriction). New types `H264ScalingLists`,
+  `H264Vui`, `H264HrdParameters`, `H264CpbEntry`; helpers
+  `sample_aspect_ratio()` (Table E-1), `field_rate()`/`frame_rate()`
+  (§E.2.1), `bit_rate()`/`cpb_size()` (§E.2.2).
+- h264: PPS scaling lists via new `parse_pps_with_sps` /
+  `parse_pps_nal_with_sps` (§7.3.2.2 list count depends on the active
+  SPS `chroma_format_idc`); `parse_idr_only` feeds the SPS context
+  through automatically.
+- h264: hostile-input guards — `delta_scale` range (−128..=127,
+  §7.4.2.1.1.1) and `cpb_cnt_minus1 ≤ 31` (§E.2.2) bound all loops.
+
 ### Fixed
 
 - H.264 / HEVC SPS parsers now reject an out-of-range
