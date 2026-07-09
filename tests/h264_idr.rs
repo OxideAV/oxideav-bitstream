@@ -169,3 +169,25 @@ fn sps_pps_fixture_roundtrip_is_byte_exact() {
         );
     }
 }
+
+#[test]
+fn framing_conversion_preserves_nal_units_on_fixture() {
+    use oxideav_bitstream::nal::{
+        annex_b_to_length_prefixed, length_prefixed_to_annex_b, split_length_prefixed,
+    };
+    for (name, stream) in [("baseline", BASELINE), ("high", HIGH)] {
+        let lp = annex_b_to_length_prefixed(stream, 4).expect("to length-prefixed");
+        // The NAL bodies must be identical in both framings.
+        let from_lp = split_length_prefixed(&lp, 4).expect("split length-prefixed");
+        let from_ab = split_annex_b(stream);
+        assert_eq!(from_lp, from_ab, "{name}: NAL bodies preserved");
+        // Length-prefixed → Annex-B → length-prefixed is a fixed
+        // point (the canonical 4-byte start-code form).
+        let ab = length_prefixed_to_annex_b(&lp, 4).expect("back to Annex-B");
+        let lp2 = annex_b_to_length_prefixed(&ab, 4).expect("and forth");
+        assert_eq!(lp, lp2, "{name}: canonical round-trip");
+        // The re-framed Annex-B stream still parses end-to-end.
+        let parsed = parse_idr_only(&ab).expect("re-framed stream parses");
+        assert_eq!(parsed.sps.coded_width(), 320);
+    }
+}

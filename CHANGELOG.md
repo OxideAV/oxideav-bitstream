@@ -76,6 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   five families round-trip through the writer, including end-to-end
   framing through `write_obu`/`read_obu`.
 
+- nal: framing converters — `split_length_prefixed`,
+  `annex_b_to_length_prefixed`, `length_prefixed_to_annex_b` re-frame
+  elementary streams between Annex-B start-code form (ITU-T Annex B)
+  and 1..4-byte big-endian length-prefixed form (ISO base-media
+  sample framing) without touching NAL bodies. Declared lengths are
+  validated against actual bytes; oversize NALs that cannot fit the
+  prefix width are refused.
+
 ### Fixed
 
 - H.264 / HEVC SPS parsers now reject an out-of-range

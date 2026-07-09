@@ -111,6 +111,143 @@ pub fn rbsp_to_ebsp(rbsp: &[u8]) -> Vec<u8> {
     out
 }
 
+// ─────────────────────────── Framing conversion ─────────────────────────────
+//
+// The same elementary stream travels in two framings:
+//
+// * **Annex-B byte stream** (ITU-T H.264 / H.265 / H.266 Annex B) —
+//   each NAL unit is preceded by a 3-byte (`00 00 01`) or 4-byte
+//   (`00 00 00 01`) start-code prefix.
+// * **Length-prefixed** (ISO base-media sample framing) — each NAL
+//   unit is preceded by a 1..4-byte big-endian length field
+//   (`nal_length_size`, most commonly 4).
+//
+// The converters below re-frame between the two without touching NAL
+// payload bytes (emulation-prevention stays as-is: it is a property
+// of the NAL body, not of the framing).
+
+use crate::BitstreamError;
+
+/// Split a length-prefixed stream into NAL-unit body slices.
+///
+/// `length_size` is the prefix width in bytes (1..=4). Every declared
+/// length is validated against the remaining bytes before slicing —
+/// a truncated final unit yields [`BitstreamError::UnexpectedEnd`].
+pub fn split_length_prefixed(buf: &[u8], length_size: usize) -> Result<Vec<&[u8]>, BitstreamError> {
+    if !(1..=4).contains(&length_size) {
+        return Err(BitstreamError::invalid(
+            "nal_length_size must be 1..=4 bytes",
+        ));
+    }
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < buf.len() {
+        if i + length_size > buf.len() {
+            return Err(BitstreamError::unexpected_end(
+                "length prefix truncated at end of stream",
+            ));
+        }
+        let mut len = 0usize;
+        for &b in &buf[i..i + length_size] {
+            len = (len << 8) | b as usize;
+        }
+        i += length_size;
+        let end = i
+            .checked_add(len)
+            .ok_or_else(|| BitstreamError::invalid("NAL length overflow"))?;
+        if end > buf.len() {
+            return Err(BitstreamError::unexpected_end(format!(
+                "declared NAL length {len} overruns stream ({} bytes left)",
+                buf.len() - i
+            )));
+        }
+        out.push(&buf[i..end]);
+        i = end;
+    }
+    Ok(out)
+}
+
+/// Convert a length-prefixed stream to an Annex-B byte stream. Every
+/// NAL unit is emitted behind a 4-byte `00 00 00 01` start code.
+pub fn length_prefixed_to_annex_b(
+    buf: &[u8],
+    length_size: usize,
+) -> Result<Vec<u8>, BitstreamError> {
+    let nals = split_length_prefixed(buf, length_size)?;
+    let mut out = Vec::with_capacity(buf.len() + nals.len());
+    for nal in nals {
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(nal);
+    }
+    Ok(out)
+}
+
+/// Convert an Annex-B byte stream to length-prefixed framing.
+///
+/// Accepts both 3- and 4-byte start codes and any leading garbage
+/// before the first start code (skipped, matching the Annex-B
+/// byte-stream decoding process which scans for the first prefix).
+/// Fails with [`BitstreamError::InvalidData`] when a NAL unit's
+/// length does not fit `length_size` bytes, or when no start code is
+/// found at all.
+pub fn annex_b_to_length_prefixed(
+    buf: &[u8],
+    length_size: usize,
+) -> Result<Vec<u8>, BitstreamError> {
+    if !(1..=4).contains(&length_size) {
+        return Err(BitstreamError::invalid(
+            "nal_length_size must be 1..=4 bytes",
+        ));
+    }
+    let max_len: u64 = if length_size == 4 {
+        u32::MAX as u64
+    } else {
+        (1u64 << (8 * length_size)) - 1
+    };
+    let mut out = Vec::with_capacity(buf.len());
+    let mut found_any = false;
+    let mut i = 0usize;
+    let n = buf.len();
+    let mut body_start: Option<usize> = None;
+    let flush = |start: usize, end: usize, out: &mut Vec<u8>| -> Result<(), BitstreamError> {
+        let len = end - start;
+        if len as u64 > max_len {
+            return Err(BitstreamError::invalid(format!(
+                "NAL unit of {len} bytes does not fit a {length_size}-byte length prefix"
+            )));
+        }
+        for shift in (0..length_size).rev() {
+            out.push((len >> (8 * shift)) as u8);
+        }
+        out.extend_from_slice(&buf[start..end]);
+        Ok(())
+    };
+    while i < n {
+        let four =
+            i + 3 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 && buf[i + 3] == 1;
+        let three = !four && i + 2 < n && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1;
+        if four || three {
+            if let Some(start) = body_start.take() {
+                flush(start, i, &mut out)?;
+            }
+            i += if four { 4 } else { 3 };
+            body_start = Some(i);
+            found_any = true;
+            continue;
+        }
+        i += 1;
+    }
+    if let Some(start) = body_start.take() {
+        flush(start, n, &mut out)?;
+    }
+    if !found_any {
+        return Err(BitstreamError::invalid(
+            "no Annex-B start code found in input",
+        ));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +345,90 @@ mod tests {
     #[test]
     fn rbsp_empty_in_empty_out() {
         assert_eq!(rbsp_to_ebsp(&[]), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn length_prefixed_split_and_roundtrip() {
+        // Two units behind 4-byte lengths.
+        let stream = [
+            0, 0, 0, 3, 0x67, 0xAA, 0xBB, // NAL 1 (3 bytes)
+            0, 0, 0, 2, 0x68, 0xCC, // NAL 2 (2 bytes)
+        ];
+        let nals = split_length_prefixed(&stream, 4).unwrap();
+        assert_eq!(nals, vec![&[0x67, 0xAA, 0xBB][..], &[0x68, 0xCC][..]]);
+
+        let annex_b = length_prefixed_to_annex_b(&stream, 4).unwrap();
+        assert_eq!(
+            annex_b,
+            vec![0, 0, 0, 1, 0x67, 0xAA, 0xBB, 0, 0, 0, 1, 0x68, 0xCC]
+        );
+        // And back.
+        assert_eq!(
+            annex_b_to_length_prefixed(&annex_b, 4).unwrap(),
+            stream.to_vec()
+        );
+    }
+
+    #[test]
+    fn length_prefixed_supports_all_prefix_widths() {
+        for size in 1usize..=4 {
+            let mut stream = Vec::new();
+            let body = [0x41u8, 0x9A, 0x00, 0x7F];
+            for shift in (0..size).rev() {
+                stream.push(((body.len() >> (8 * shift)) & 0xFF) as u8);
+            }
+            stream.extend_from_slice(&body);
+            let nals = split_length_prefixed(&stream, size).unwrap();
+            assert_eq!(nals, vec![&body[..]], "prefix width {size}");
+            let ab = length_prefixed_to_annex_b(&stream, size).unwrap();
+            assert_eq!(annex_b_to_length_prefixed(&ab, size).unwrap(), stream);
+        }
+    }
+
+    #[test]
+    fn length_prefixed_rejects_overrun_and_bad_width() {
+        // Declares 5 bytes, provides 2.
+        let stream = [0, 0, 0, 5, 0xAA, 0xBB];
+        assert!(matches!(
+            split_length_prefixed(&stream, 4).unwrap_err(),
+            BitstreamError::UnexpectedEnd(_)
+        ));
+        // Truncated prefix.
+        assert!(matches!(
+            split_length_prefixed(&[0, 0], 4).unwrap_err(),
+            BitstreamError::UnexpectedEnd(_)
+        ));
+        // Invalid width.
+        assert!(matches!(
+            split_length_prefixed(&[0], 0).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+        assert!(matches!(
+            split_length_prefixed(&[0], 5).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+    }
+
+    #[test]
+    fn annex_b_conversion_accepts_mixed_start_codes_and_rejects_oversize() {
+        // 3-byte start code for the second NAL.
+        let annex_b = [0u8, 0, 0, 1, 0x67, 0xAA, 0, 0, 1, 0x68];
+        let lp = annex_b_to_length_prefixed(&annex_b, 4).unwrap();
+        assert_eq!(lp, vec![0, 0, 0, 2, 0x67, 0xAA, 0, 0, 0, 1, 0x68]);
+
+        // A 300-byte NAL cannot fit a 1-byte prefix.
+        let mut big = vec![0u8, 0, 0, 1];
+        big.extend(std::iter::repeat_n(0x42u8, 300));
+        assert!(matches!(
+            annex_b_to_length_prefixed(&big, 1).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+
+        // No start code at all.
+        assert!(matches!(
+            annex_b_to_length_prefixed(&[0x12, 0x34], 4).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
     }
 
     #[test]
