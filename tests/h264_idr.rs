@@ -121,3 +121,27 @@ fn parse_sps_pps_individually_via_split() {
     assert!(sh.is_i_slice());
     assert_eq!(sh.idr_pic_id, Some(0));
 }
+
+#[test]
+fn sei_nal_parses_on_both_fixtures() {
+    use oxideav_bitstream::h264::sei::{
+        decode_sei_message, parse_sei_nal, H264Sei, NAL_TYPE_SEI, SEI_TYPE_USER_DATA_UNREGISTERED,
+    };
+    for (name, stream) in [("baseline", BASELINE), ("high", HIGH)] {
+        let sei_nal = find_nal_of_type(stream, NAL_TYPE_SEI)
+            .unwrap_or_else(|| panic!("{name} fixture has an SEI NAL"));
+        let msgs = parse_sei_nal(sei_nal).expect("SEI NAL parses");
+        assert_eq!(msgs.len(), 1, "{name}: one sei_message()");
+        assert_eq!(
+            msgs[0].payload_type, SEI_TYPE_USER_DATA_UNREGISTERED,
+            "{name}: encoder-settings user data"
+        );
+        let H264Sei::UserDataUnregistered(u) = decode_sei_message(&msgs[0], None).expect("decodes")
+        else {
+            panic!("{name}: expected UserDataUnregistered");
+        };
+        // 16-byte UUID followed by a non-empty settings string.
+        assert!(!u.payload.is_empty(), "{name}: non-empty user data body");
+        assert_ne!(u.uuid, [0u8; 16], "{name}: non-zero UUID");
+    }
+}

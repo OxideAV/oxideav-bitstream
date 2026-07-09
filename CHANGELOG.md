@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - h264: hostile-input guards — `delta_scale` range (−128..=127,
   §7.4.2.1.1.1) and `cpb_cnt_minus1 ≤ 31` (§E.2.2) bound all loops.
 
+- h264: SEI parsing — `h264::sei` module with §7.3.2.3/§7.3.2.3.1
+  `sei_rbsp()`/`sei_message()` framing (0xFF run-length payloadType /
+  payloadSize accumulation, declared-size-vs-actual-bytes validation)
+  plus byte-exact framing writers (`write_sei_message` /
+  `write_sei_rbsp`). Typed decoders: buffering_period (§D.1.2, HRD
+  field widths from the active SPS), pic_timing (§D.1.3 incl. the full
+  clock-timestamp ladder, NumClockTS per Table D-1, reserved
+  pic_struct rejected), user_data_registered_itu_t_t35 (§D.1.6),
+  user_data_unregistered (§D.1.7), recovery_point (§D.1.8); every
+  other type surfaced raw per §D.2.1.
+
 ### Fixed
 
 - H.264 / HEVC SPS parsers now reject an out-of-range

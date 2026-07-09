@@ -29,6 +29,8 @@
 use crate::bit_reader::BitReader;
 use crate::BitstreamError;
 
+pub mod sei;
+
 // ─────────────────────────── NAL unit types ──────────────────────────────────
 
 /// H.264 NAL unit type 5 — Coded slice of an IDR picture (7.4.1).
