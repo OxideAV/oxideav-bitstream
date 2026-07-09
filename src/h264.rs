@@ -127,12 +127,20 @@ pub struct H264FrameCropping {
 /// * `present[i] && use_default[i]` — the list was signalled with
 ///   `delta_scale` driving `nextScale` to 0 on the first coefficient
 ///   (`UseDefaultScalingMatrixFlag`, §7.3.2.1.1.1), selecting the
-///   default matrix of Tables 7-3/7-4.
+///   default matrix of Tables 7-3/7-4. The stored coefficient array
+///   is zeroed in this case — the §7.3.2.1.1.1 pseudo-code's residual
+///   fill values are never consumed when the default-matrix flag is
+///   set, and zeroing keeps parse→write→parse a fixed point.
 /// * `present[i] && !use_default[i]` — the raw coefficients are in
 ///   `list_4x4[i]` / `list_8x8[i - 6]`, in coding (zig-zag delta)
 ///   order as reconstructed by the §7.3.2.1.1.1 pseudo-code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct H264ScalingLists {
+    /// Number of list slots coded in the bitstream: 8 or 12 for the
+    /// SPS block (§7.3.2.1.1), 6 / 8 / 12 for the PPS block
+    /// (§7.3.2.2). Recorded so a writer can re-emit exactly the same
+    /// number of `*_scaling_list_present_flag` bits.
+    pub coded_count: u8,
     pub present: [bool; 12],
     pub use_default: [bool; 12],
     pub list_4x4: [[u8; 16]; 6],
@@ -142,6 +150,7 @@ pub struct H264ScalingLists {
 impl Default for H264ScalingLists {
     fn default() -> Self {
         H264ScalingLists {
+            coded_count: 0,
             present: [false; 12],
             use_default: [false; 12],
             list_4x4: [[0; 16]; 6],
@@ -185,6 +194,12 @@ fn parse_scaling_list(r: &mut BitReader<'_>, out: &mut [u8]) -> Result<bool, Bit
         };
         last_scale = *slot as i32;
     }
+    if use_default {
+        // The reconstructed values are dead when the default-matrix
+        // flag fires (§7.4.2.1.1.1 sends the decoder to Tables
+        // 7-3/7-4); zero them so the struct has one canonical form.
+        out.fill(0);
+    }
     Ok(use_default)
 }
 
@@ -197,7 +212,10 @@ fn parse_scaling_matrix(
     r: &mut BitReader<'_>,
     count: usize,
 ) -> Result<H264ScalingLists, BitstreamError> {
-    let mut lists = H264ScalingLists::default();
+    let mut lists = H264ScalingLists {
+        coded_count: count.min(12) as u8,
+        ..H264ScalingLists::default()
+    };
     for i in 0..count.min(12) {
         lists.present[i] = r.u(1) != 0;
         if lists.present[i] {
@@ -482,6 +500,13 @@ pub struct H264Sps {
     pub pic_order_cnt_type: u8,
     pub log2_max_pic_order_cnt_lsb_minus4: u8,
     pub delta_pic_order_always_zero_flag: bool,
+    /// §7.4.2.1.1 — POC type 1 only.
+    pub offset_for_non_ref_pic: i32,
+    /// §7.4.2.1.1 — POC type 1 only.
+    pub offset_for_top_to_bottom_field: i32,
+    /// `offset_for_ref_frame[i]` for POC type 1
+    /// (`num_ref_frames_in_pic_order_cnt_cycle` entries, §7.4.2.1.1).
+    pub offsets_for_ref_frame: Vec<i32>,
     pub max_num_ref_frames: u32,
     pub gaps_in_frame_num_value_allowed_flag: bool,
 
@@ -589,6 +614,13 @@ pub struct H264Pps {
     pub deblocking_filter_control_present_flag: bool,
     pub constrained_intra_pred_flag: bool,
     pub redundant_pic_cnt_present_flag: bool,
+    /// True when the optional §7.3.2.2 tail (`transform_8x8_mode_flag`
+    /// / `pic_scaling_matrix_present_flag` /
+    /// `second_chroma_qp_index_offset`) was coded — i.e.
+    /// `more_rbsp_data()` was true after
+    /// `redundant_pic_cnt_present_flag`. Recorded so [`write_pps`]
+    /// reproduces the exact byte layout.
+    pub high_profile_tail_present: bool,
     /// Only meaningful when the High-profile extension block is
     /// present; otherwise defaulted to false.
     pub transform_8x8_mode_flag: bool,
@@ -707,11 +739,19 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<H264Sps, BitstreamError> {
         }
         1 => {
             sps.delta_pic_order_always_zero_flag = r.u(1) != 0;
-            let _offset_for_non_ref_pic = r.se()?;
-            let _offset_for_top_to_bottom_field = r.se()?;
+            sps.offset_for_non_ref_pic = r.se()?;
+            sps.offset_for_top_to_bottom_field = r.se()?;
             let num_ref_frames_in_pic_order_cnt_cycle = r.ue()?;
+            // §7.4.2.1.1: num_ref_frames_in_pic_order_cnt_cycle shall
+            // be in the range of 0 to 255, inclusive — bounds the loop
+            // on hostile input.
+            if num_ref_frames_in_pic_order_cnt_cycle > 255 {
+                return Err(BitstreamError::invalid(format!(
+                    "SPS num_ref_frames_in_pic_order_cnt_cycle={num_ref_frames_in_pic_order_cnt_cycle} (must be 0..=255)"
+                )));
+            }
             for _ in 0..num_ref_frames_in_pic_order_cnt_cycle {
-                let _offset_for_ref_frame = r.se()?;
+                sps.offsets_for_ref_frame.push(r.se()?);
             }
         }
         2 => { /* nothing further */ }
@@ -815,6 +855,7 @@ fn parse_pps_inner(rbsp: &[u8], sps: Option<&H264Sps>) -> Result<H264Pps, Bitstr
     pps.redundant_pic_cnt_present_flag = r.u(1) != 0;
 
     if r.more_rbsp_data() {
+        pps.high_profile_tail_present = true;
         pps.transform_8x8_mode_flag = r.u(1) != 0;
         let pic_scaling_matrix_present = r.u(1);
         if pic_scaling_matrix_present != 0 {
@@ -1017,6 +1058,333 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
         });
     }
     out
+}
+
+// ─────────────────────────── Writers ────────────────────────────────────────
+
+/// Emit one `scaling_list()` (§7.3.2.1.1.1) for a decoded list. The
+/// inverse of [`parse_scaling_list`]:
+///
+/// * `use_default` — a single `delta_scale` driving `nextScale` from
+///   the initial `lastScale = 8` to 0.
+/// * explicit — one `delta_scale` per coefficient
+///   (`value[j] - lastScale`, wrapped into −128..=127 mod 256).
+///
+/// Note: a list whose original encoder froze the run early
+/// (`delta_scale` to 0 at some `j > 0`) decodes to trailing repeats
+/// of the freeze value; this writer re-encodes those repeats as
+/// explicit zero deltas. The decoded coefficients are identical, but
+/// the bit pattern differs — freeze coding is a lossy-to-reconstruct
+/// encoder choice.
+fn write_scaling_list(w: &mut crate::bit_writer::BitWriter, values: &[u8], use_default: bool) {
+    if use_default {
+        // lastScale starts at 8; delta of -8 makes nextScale 0 at j=0.
+        w.write_se(-8).expect("constant in range");
+        return;
+    }
+    let mut last: i32 = 8;
+    for &v in values {
+        let mut delta = v as i32 - last;
+        // Wrap into the −128..=127 window (mod-256 arithmetic in the
+        // §7.3.2.1.1.1 reconstruction makes any residue equivalent).
+        if delta > 127 {
+            delta -= 256;
+        } else if delta < -128 {
+            delta += 256;
+        }
+        w.write_se(delta).expect("wrapped into se range");
+        last = v as i32;
+    }
+}
+
+/// Emit a `seq_scaling_matrix` / `pic_scaling_matrix` list block —
+/// inverse of [`parse_scaling_matrix`].
+fn write_scaling_matrix(
+    w: &mut crate::bit_writer::BitWriter,
+    lists: &H264ScalingLists,
+) -> Result<(), BitstreamError> {
+    if lists.coded_count as usize > 12 {
+        return Err(BitstreamError::invalid(
+            "scaling matrix coded_count exceeds the 12 defined list slots",
+        ));
+    }
+    for i in 0..lists.coded_count as usize {
+        w.write_bit(u32::from(lists.present[i]));
+        if lists.present[i] {
+            if i < 6 {
+                write_scaling_list(w, &lists.list_4x4[i], lists.use_default[i]);
+            } else {
+                write_scaling_list(w, &lists.list_8x8[i - 6], lists.use_default[i]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit an `hrd_parameters()` structure (§E.1.2) — inverse of the
+/// VUI parser's HRD branch. Validates that the schedule-entry list
+/// matches `cpb_cnt_minus1 + 1` and that `cpb_cnt_minus1 ≤ 31`
+/// (§E.2.2).
+fn write_hrd_parameters(
+    w: &mut crate::bit_writer::BitWriter,
+    hrd: &H264HrdParameters,
+) -> Result<(), BitstreamError> {
+    if hrd.cpb_cnt_minus1 > 31 {
+        return Err(BitstreamError::invalid(
+            "hrd_parameters cpb_cnt_minus1 must be 0..=31 (§E.2.2)",
+        ));
+    }
+    if hrd.cpb.len() != hrd.cpb_cnt_minus1 as usize + 1 {
+        return Err(BitstreamError::invalid(format!(
+            "hrd_parameters cpb entries ({}) != cpb_cnt_minus1 + 1 ({})",
+            hrd.cpb.len(),
+            hrd.cpb_cnt_minus1 + 1
+        )));
+    }
+    w.write_ue(hrd.cpb_cnt_minus1)?;
+    w.write_bits(hrd.bit_rate_scale as u32, 4);
+    w.write_bits(hrd.cpb_size_scale as u32, 4);
+    for e in &hrd.cpb {
+        w.write_ue(e.bit_rate_value_minus1)?;
+        w.write_ue(e.cpb_size_value_minus1)?;
+        w.write_bit(u32::from(e.cbr_flag));
+    }
+    w.write_bits(hrd.initial_cpb_removal_delay_length_minus1 as u32, 5);
+    w.write_bits(hrd.cpb_removal_delay_length_minus1 as u32, 5);
+    w.write_bits(hrd.dpb_output_delay_length_minus1 as u32, 5);
+    w.write_bits(hrd.time_offset_length as u32, 5);
+    Ok(())
+}
+
+/// Emit a `vui_parameters()` structure (§E.1.1) — inverse of the VUI
+/// parser.
+fn write_vui_parameters(
+    w: &mut crate::bit_writer::BitWriter,
+    vui: &H264Vui,
+) -> Result<(), BitstreamError> {
+    w.write_bit(u32::from(vui.aspect_ratio_info_present_flag));
+    if vui.aspect_ratio_info_present_flag {
+        w.write_bits(vui.aspect_ratio_idc as u32, 8);
+        if vui.aspect_ratio_idc == H264_EXTENDED_SAR {
+            w.write_bits(vui.sar_width as u32, 16);
+            w.write_bits(vui.sar_height as u32, 16);
+        }
+    }
+    w.write_bit(u32::from(vui.overscan_info_present_flag));
+    if vui.overscan_info_present_flag {
+        w.write_bit(u32::from(vui.overscan_appropriate_flag));
+    }
+    w.write_bit(u32::from(vui.video_signal_type_present_flag));
+    if vui.video_signal_type_present_flag {
+        w.write_bits(vui.video_format as u32, 3);
+        w.write_bit(u32::from(vui.video_full_range_flag));
+        w.write_bit(u32::from(vui.colour_description_present_flag));
+        if vui.colour_description_present_flag {
+            w.write_bits(vui.colour_primaries as u32, 8);
+            w.write_bits(vui.transfer_characteristics as u32, 8);
+            w.write_bits(vui.matrix_coefficients as u32, 8);
+        }
+    }
+    w.write_bit(u32::from(vui.chroma_loc_info_present_flag));
+    if vui.chroma_loc_info_present_flag {
+        w.write_ue(vui.chroma_sample_loc_type_top_field)?;
+        w.write_ue(vui.chroma_sample_loc_type_bottom_field)?;
+    }
+    w.write_bit(u32::from(vui.timing_info_present_flag));
+    if vui.timing_info_present_flag {
+        w.write_bits(vui.num_units_in_tick, 32);
+        w.write_bits(vui.time_scale, 32);
+        w.write_bit(u32::from(vui.fixed_frame_rate_flag));
+    }
+    w.write_bit(u32::from(vui.nal_hrd_parameters.is_some()));
+    if let Some(hrd) = &vui.nal_hrd_parameters {
+        write_hrd_parameters(w, hrd)?;
+    }
+    w.write_bit(u32::from(vui.vcl_hrd_parameters.is_some()));
+    if let Some(hrd) = &vui.vcl_hrd_parameters {
+        write_hrd_parameters(w, hrd)?;
+    }
+    if vui.nal_hrd_parameters.is_some() || vui.vcl_hrd_parameters.is_some() {
+        w.write_bit(u32::from(vui.low_delay_hrd_flag));
+    }
+    w.write_bit(u32::from(vui.pic_struct_present_flag));
+    w.write_bit(u32::from(vui.bitstream_restriction_flag));
+    if vui.bitstream_restriction_flag {
+        w.write_bit(u32::from(vui.motion_vectors_over_pic_boundaries_flag));
+        w.write_ue(vui.max_bytes_per_pic_denom)?;
+        w.write_ue(vui.max_bits_per_mb_denom)?;
+        w.write_ue(vui.log2_max_mv_length_horizontal)?;
+        w.write_ue(vui.log2_max_mv_length_vertical)?;
+        w.write_ue(vui.max_num_reorder_frames)?;
+        w.write_ue(vui.max_dec_frame_buffering)?;
+    }
+    Ok(())
+}
+
+/// Emit an SPS RBSP (§7.3.2.1.1 `seq_parameter_set_data()` +
+/// `rbsp_trailing_bits()`) — the byte-exact inverse of [`parse_sps`]
+/// for every field the parser surfaces.
+///
+/// Validation mirrors the parser's own guards:
+/// `log2_max_frame_num_minus4` / `log2_max_pic_order_cnt_lsb_minus4`
+/// must be ≤ 12 (§7.4.2.1.1), `pic_order_cnt_type` ≤ 2,
+/// `offsets_for_ref_frame.len()` ≤ 255, and a scaling matrix or a
+/// 4:2:2/4:4:4 `chroma_format_idc` requires a High-profile
+/// `profile_idc` (the extension block is otherwise not coded).
+pub fn write_sps(sps: &H264Sps) -> Result<Vec<u8>, BitstreamError> {
+    let high = H264Sps::has_high_profile_extension(sps.profile_idc);
+    if !high && (sps.seq_scaling_lists.is_some() || sps.chroma_format_idc != 1) {
+        return Err(BitstreamError::invalid(
+            "SPS scaling lists / non-4:2:0 chroma need a High-class profile_idc (§7.3.2.1.1)",
+        ));
+    }
+    if sps.log2_max_frame_num_minus4 > 12 {
+        return Err(BitstreamError::invalid(
+            "SPS log2_max_frame_num_minus4 must be 0..=12 (§7.4.2.1.1)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_bits(sps.profile_idc as u32, 8);
+    w.write_bits(sps.constraint_set_flags as u32, 8);
+    w.write_bits(sps.level_idc as u32, 8);
+    w.write_ue(sps.seq_parameter_set_id as u32)?;
+    if high {
+        w.write_ue(sps.chroma_format_idc as u32)?;
+        if sps.chroma_format_idc == 3 {
+            w.write_bit(u32::from(sps.separate_colour_plane_flag));
+        }
+        w.write_ue(sps.bit_depth_luma_minus8 as u32)?;
+        w.write_ue(sps.bit_depth_chroma_minus8 as u32)?;
+        w.write_bit(u32::from(sps.qpprime_y_zero_transform_bypass_flag));
+        w.write_bit(u32::from(sps.seq_scaling_lists.is_some()));
+        if let Some(lists) = &sps.seq_scaling_lists {
+            write_scaling_matrix(&mut w, lists)?;
+        }
+    }
+    w.write_ue(sps.log2_max_frame_num_minus4 as u32)?;
+    w.write_ue(sps.pic_order_cnt_type as u32)?;
+    match sps.pic_order_cnt_type {
+        0 => {
+            if sps.log2_max_pic_order_cnt_lsb_minus4 > 12 {
+                return Err(BitstreamError::invalid(
+                    "SPS log2_max_pic_order_cnt_lsb_minus4 must be 0..=12 (§7.4.2.1.1)",
+                ));
+            }
+            w.write_ue(sps.log2_max_pic_order_cnt_lsb_minus4 as u32)?;
+        }
+        1 => {
+            w.write_bit(u32::from(sps.delta_pic_order_always_zero_flag));
+            w.write_se(sps.offset_for_non_ref_pic)?;
+            w.write_se(sps.offset_for_top_to_bottom_field)?;
+            if sps.offsets_for_ref_frame.len() > 255 {
+                return Err(BitstreamError::invalid(
+                    "SPS num_ref_frames_in_pic_order_cnt_cycle must be 0..=255 (§7.4.2.1.1)",
+                ));
+            }
+            w.write_ue(sps.offsets_for_ref_frame.len() as u32)?;
+            for &off in &sps.offsets_for_ref_frame {
+                w.write_se(off)?;
+            }
+        }
+        2 => {}
+        other => {
+            return Err(BitstreamError::invalid(format!(
+                "SPS pic_order_cnt_type={other} (must be 0..2)"
+            )));
+        }
+    }
+    w.write_ue(sps.max_num_ref_frames)?;
+    w.write_bit(u32::from(sps.gaps_in_frame_num_value_allowed_flag));
+    w.write_ue(sps.pic_width_in_mbs_minus1)?;
+    w.write_ue(sps.pic_height_in_map_units_minus1)?;
+    w.write_bit(u32::from(sps.frame_mbs_only_flag));
+    if !sps.frame_mbs_only_flag {
+        w.write_bit(u32::from(sps.mb_adaptive_frame_field_flag));
+    }
+    w.write_bit(u32::from(sps.direct_8x8_inference_flag));
+    w.write_bit(u32::from(sps.frame_cropping.is_some()));
+    if let Some(c) = &sps.frame_cropping {
+        w.write_ue(c.left)?;
+        w.write_ue(c.right)?;
+        w.write_ue(c.top)?;
+        w.write_ue(c.bottom)?;
+    }
+    w.write_bit(u32::from(sps.vui.is_some()));
+    if let Some(vui) = &sps.vui {
+        write_vui_parameters(&mut w, vui)?;
+    }
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete SPS NAL: header byte (`forbidden_zero = 0`,
+/// `nal_ref_idc = 3` — parameter sets are reference material per
+/// §7.4.1's non-zero requirement, and 3 is the customary value) +
+/// emulation-prevention-encoded RBSP.
+pub fn write_sps_nal(sps: &H264Sps) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_sps(sps)?;
+    let mut out = Vec::with_capacity(1 + rbsp.len());
+    out.push(0x60 | NAL_TYPE_SPS); // nal_ref_idc=3, type=7 → 0x67
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
+}
+
+/// Emit a PPS RBSP (§7.3.2.2 + `rbsp_trailing_bits()`) — the
+/// byte-exact inverse of [`parse_pps`] / [`parse_pps_with_sps`].
+///
+/// The optional tail (`transform_8x8_mode_flag`, scaling matrix,
+/// `second_chroma_qp_index_offset`) is emitted iff
+/// `high_profile_tail_present` is set, reproducing the original
+/// `more_rbsp_data()` layout.
+pub fn write_pps(pps: &H264Pps) -> Result<Vec<u8>, BitstreamError> {
+    if pps.num_slice_groups_minus1 != 0 {
+        return Err(BitstreamError::unsupported(
+            "PPS num_slice_groups_minus1>0 (FMO/ASO) not supported",
+        ));
+    }
+    if !pps.high_profile_tail_present
+        && (pps.transform_8x8_mode_flag || pps.pic_scaling_lists.is_some())
+    {
+        return Err(BitstreamError::invalid(
+            "PPS transform_8x8 / scaling lists require high_profile_tail_present (§7.3.2.2)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_ue(pps.pic_parameter_set_id as u32)?;
+    w.write_ue(pps.seq_parameter_set_id as u32)?;
+    w.write_bit(u32::from(pps.entropy_coding_mode_flag));
+    w.write_bit(u32::from(pps.bottom_field_pic_order_in_frame_present_flag));
+    w.write_ue(pps.num_slice_groups_minus1)?;
+    w.write_ue(pps.num_ref_idx_l0_default_active_minus1 as u32)?;
+    w.write_ue(pps.num_ref_idx_l1_default_active_minus1 as u32)?;
+    w.write_bit(u32::from(pps.weighted_pred_flag));
+    w.write_bits(pps.weighted_bipred_idc as u32, 2);
+    w.write_se(pps.pic_init_qp_minus26)?;
+    w.write_se(pps.pic_init_qs_minus26)?;
+    w.write_se(pps.chroma_qp_index_offset)?;
+    w.write_bit(u32::from(pps.deblocking_filter_control_present_flag));
+    w.write_bit(u32::from(pps.constrained_intra_pred_flag));
+    w.write_bit(u32::from(pps.redundant_pic_cnt_present_flag));
+    if pps.high_profile_tail_present {
+        w.write_bit(u32::from(pps.transform_8x8_mode_flag));
+        w.write_bit(u32::from(pps.pic_scaling_lists.is_some()));
+        if let Some(lists) = &pps.pic_scaling_lists {
+            write_scaling_matrix(&mut w, lists)?;
+        }
+        w.write_se(pps.second_chroma_qp_index_offset)?;
+    }
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete PPS NAL (header byte 0x68: `nal_ref_idc = 3`,
+/// type 8) + emulation-prevention-encoded RBSP.
+pub fn write_pps_nal(pps: &H264Pps) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_pps(pps)?;
+    let mut out = Vec::with_capacity(1 + rbsp.len());
+    out.push(0x60 | NAL_TYPE_PPS); // nal_ref_idc=3, type=8 → 0x68
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
 }
 
 // ─────────────────────────── Access unit delimiter ──────────────────────────
@@ -1538,6 +1906,190 @@ mod tests {
             assert_eq!(pps.second_chroma_qp_index_offset, -2);
             assert_eq!(pps.chroma_qp_index_offset, 2);
         }
+    }
+
+    #[test]
+    fn sps_write_parse_roundtrip_baseline_poc_type_1() {
+        // POC type 1 exercises the offset fields the writer must
+        // reproduce (§7.4.2.1.1).
+        let sps = H264Sps {
+            profile_idc: 66,
+            constraint_set_flags: 0xC0,
+            level_idc: 30,
+            seq_parameter_set_id: 2,
+            chroma_format_idc: 1,
+            log2_max_frame_num_minus4: 5,
+            pic_order_cnt_type: 1,
+            delta_pic_order_always_zero_flag: true,
+            offset_for_non_ref_pic: -3,
+            offset_for_top_to_bottom_field: 7,
+            offsets_for_ref_frame: vec![1, -2, 3],
+            max_num_ref_frames: 4,
+            gaps_in_frame_num_value_allowed_flag: true,
+            pic_width_in_mbs_minus1: 19,
+            pic_height_in_map_units_minus1: 14,
+            frame_mbs_only_flag: false,
+            mb_adaptive_frame_field_flag: true,
+            direct_8x8_inference_flag: true,
+            frame_cropping: Some(H264FrameCropping {
+                left: 0,
+                right: 4,
+                top: 0,
+                bottom: 6,
+            }),
+            ..H264Sps::default()
+        };
+        let rbsp = write_sps(&sps).expect("writes");
+        let parsed = parse_sps(&rbsp).expect("re-parses");
+        assert_eq!(parsed, sps);
+        // And writing the re-parse is byte-identical (full inverse).
+        assert_eq!(write_sps(&parsed).unwrap(), rbsp);
+    }
+
+    #[test]
+    fn sps_write_parse_roundtrip_high_with_scaling_and_vui() {
+        let mut lists = H264ScalingLists {
+            coded_count: 8,
+            ..H264ScalingLists::default()
+        };
+        lists.present[0] = true;
+        lists.list_4x4[0] = [
+            9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        ];
+        lists.present[6] = true;
+        lists.use_default[6] = true;
+        let sps = H264Sps {
+            profile_idc: 100,
+            level_idc: 41,
+            chroma_format_idc: 1,
+            seq_scaling_lists: Some(lists),
+            log2_max_frame_num_minus4: 0,
+            pic_order_cnt_type: 2,
+            max_num_ref_frames: 2,
+            pic_width_in_mbs_minus1: 119,
+            pic_height_in_map_units_minus1: 67,
+            frame_mbs_only_flag: true,
+            direct_8x8_inference_flag: true,
+            vui: Some(H264Vui {
+                aspect_ratio_info_present_flag: true,
+                aspect_ratio_idc: H264_EXTENDED_SAR,
+                sar_width: 8,
+                sar_height: 9,
+                timing_info_present_flag: true,
+                num_units_in_tick: 1001,
+                time_scale: 48000,
+                nal_hrd_parameters: Some(H264HrdParameters {
+                    cpb_cnt_minus1: 0,
+                    bit_rate_scale: 4,
+                    cpb_size_scale: 2,
+                    cpb: vec![H264CpbEntry {
+                        bit_rate_value_minus1: 6249,
+                        cpb_size_value_minus1: 46874,
+                        cbr_flag: false,
+                    }],
+                    initial_cpb_removal_delay_length_minus1: 23,
+                    cpb_removal_delay_length_minus1: 15,
+                    dpb_output_delay_length_minus1: 5,
+                    time_offset_length: 24,
+                }),
+                low_delay_hrd_flag: false,
+                pic_struct_present_flag: true,
+                ..H264Vui::default()
+            }),
+            ..H264Sps::default()
+        };
+        let rbsp = write_sps(&sps).expect("writes");
+        let parsed = parse_sps(&rbsp).expect("re-parses");
+        assert_eq!(parsed, sps);
+        assert_eq!(write_sps(&parsed).unwrap(), rbsp);
+    }
+
+    #[test]
+    fn pps_write_parse_roundtrip_with_and_without_tail() {
+        let base = H264Pps {
+            pic_parameter_set_id: 1,
+            seq_parameter_set_id: 0,
+            entropy_coding_mode_flag: true,
+            num_ref_idx_l0_default_active_minus1: 2,
+            weighted_bipred_idc: 2,
+            pic_init_qp_minus26: -3,
+            chroma_qp_index_offset: 2,
+            deblocking_filter_control_present_flag: true,
+            ..H264Pps::default()
+        };
+        // Without tail: second_chroma copies chroma_qp_index_offset on
+        // re-parse (§7.4.2.2 inference).
+        let no_tail = H264Pps {
+            second_chroma_qp_index_offset: 2,
+            ..base.clone()
+        };
+        let rbsp = write_pps(&no_tail).expect("writes");
+        let parsed = parse_pps(&rbsp).expect("re-parses");
+        assert_eq!(parsed, no_tail);
+        assert_eq!(write_pps(&parsed).unwrap(), rbsp);
+
+        // With tail (transform_8x8 + explicit second offset).
+        let tail = H264Pps {
+            high_profile_tail_present: true,
+            transform_8x8_mode_flag: true,
+            second_chroma_qp_index_offset: -4,
+            ..base
+        };
+        let rbsp = write_pps(&tail).expect("writes");
+        let parsed = parse_pps(&rbsp).expect("re-parses");
+        assert_eq!(parsed, tail);
+        assert_eq!(write_pps(&parsed).unwrap(), rbsp);
+    }
+
+    #[test]
+    fn pps_writer_rejects_tail_fields_without_tail_marker() {
+        let pps = H264Pps {
+            transform_8x8_mode_flag: true,
+            ..H264Pps::default()
+        };
+        assert!(matches!(
+            write_pps(&pps).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+    }
+
+    #[test]
+    fn sps_writer_rejects_scaling_lists_on_baseline_profile() {
+        let sps = H264Sps {
+            profile_idc: 66,
+            chroma_format_idc: 1,
+            seq_scaling_lists: Some(H264ScalingLists::default()),
+            ..H264Sps::default()
+        };
+        assert!(matches!(
+            write_sps(&sps).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+    }
+
+    #[test]
+    fn sps_nal_writer_roundtrips_through_nal_parser() {
+        let sps = H264Sps {
+            profile_idc: 66,
+            level_idc: 10,
+            chroma_format_idc: 1,
+            pic_order_cnt_type: 2,
+            max_num_ref_frames: 1,
+            pic_width_in_mbs_minus1: 0,
+            pic_height_in_map_units_minus1: 0,
+            frame_mbs_only_flag: true,
+            ..H264Sps::default()
+        };
+        let nal = write_sps_nal(&sps).unwrap();
+        assert_eq!(nal[0], 0x67);
+        let parsed = parse_sps_nal(&nal).unwrap();
+        assert_eq!(parsed, sps);
+
+        let pps = H264Pps::default();
+        let nal = write_pps_nal(&pps).unwrap();
+        assert_eq!(nal[0], 0x68);
+        let parsed = parse_pps_nal(&nal).unwrap();
+        assert_eq!(parsed, pps);
     }
 
     #[test]

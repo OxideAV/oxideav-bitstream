@@ -145,3 +145,27 @@ fn sei_nal_parses_on_both_fixtures() {
         assert_ne!(u.uuid, [0u8; 16], "{name}: non-zero UUID");
     }
 }
+
+#[test]
+fn sps_pps_fixture_roundtrip_is_byte_exact() {
+    use oxideav_bitstream::h264::{ebsp_to_rbsp, parse_pps, parse_sps, write_pps, write_sps};
+    for (name, stream) in [("baseline", BASELINE), ("high", HIGH)] {
+        let sps_nal = find_nal_of_type(stream, NAL_TYPE_SPS).expect("SPS NAL");
+        let sps_rbsp = ebsp_to_rbsp(&sps_nal[1..]);
+        let sps = parse_sps(&sps_rbsp).expect("SPS parses");
+        assert_eq!(
+            write_sps(&sps).expect("SPS writes"),
+            sps_rbsp,
+            "{name}: SPS parse→write must reproduce the fixture bytes"
+        );
+
+        let pps_nal = find_nal_of_type(stream, NAL_TYPE_PPS).expect("PPS NAL");
+        let pps_rbsp = ebsp_to_rbsp(&pps_nal[1..]);
+        let pps = parse_pps(&pps_rbsp).expect("PPS parses");
+        assert_eq!(
+            write_pps(&pps).expect("PPS writes"),
+            pps_rbsp,
+            "{name}: PPS parse→write must reproduce the fixture bytes"
+        );
+    }
+}

@@ -35,6 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user_data_unregistered (§D.1.7), recovery_point (§D.1.8); every
   other type surfaced raw per §D.2.1.
 
+- h264: byte-exact SPS/PPS writers — `write_sps`/`write_sps_nal` and
+  `write_pps`/`write_pps_nal` are full inverses of the parsers
+  (§7.3.2.1.1 / §7.3.2.2 + `rbsp_trailing_bits()`, NAL wrapping with
+  emulation-prevention insertion). parse→write reproduces both h264
+  fixtures' SPS and PPS RBSP bytes exactly. Parser now also retains
+  the POC-type-1 offset fields (`offset_for_non_ref_pic`,
+  `offset_for_top_to_bottom_field`, `offsets_for_ref_frame`) and the
+  coded scaling-list count, and bounds
+  `num_ref_frames_in_pic_order_cnt_cycle` to 0..=255 (§7.4.2.1.1).
+  PPS records `high_profile_tail_present` so the optional §7.3.2.2
+  tail round-trips bit-for-bit.
+
 ### Fixed
 
 - H.264 / HEVC SPS parsers now reject an out-of-range
