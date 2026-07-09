@@ -84,8 +84,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validated against actual bytes; oversize NALs that cannot fit the
   prefix width are refused.
 
-### Fixed
+- hevc: SEI module (`hevc::sei`) — §7.3.5 `sei_message()` framing
+  (prefix type 39 + suffix type 40 NALs both accepted) with byte-exact
+  framing writers, plus typed decoders for ITU-T T.35 (§D.2.6),
+  user_data_unregistered (§D.2.7), recovery_point (§D.2.8, signed
+  `recovery_poc_cnt`), mastering_display_colour_volume (§D.2.28, type
+  137) and content_light_level_info (§D.2.35, type 144); everything
+  else surfaced raw per §D.3.1.
+- fuzz: parsers target now drives H.264 SEI (context-free + SPS-coupled
+  decode), HEVC SEI, AV1 metadata, and the framing converters at every
+  prefix width, and asserts parse→write→parse fixed points (H.264
+  SPS/PPS/SEI, HEVC SEI, AV1 metadata, length-prefixed framing) on
+  every successful parse.
 
+### Fixed
+- hevc: fuzz-found panic — a hostile SPS with out-of-range coding-block
+  log2 fields drove `1u32 << CtbLog2SizeY` past 31 in the
+  slice-segment-address width computation (and silently truncated
+  through the u8 struct fields). The SPS parser now rejects
+  `CtbLog2SizeY` outside 4..=6 (§A.3 profile conformance) and the
+  slice-header parser bounds the shift defensively for
+  caller-constructed SPS structs.
 - H.264 / HEVC SPS parsers now reject an out-of-range
   `log2_max_frame_num_minus4` (H.264) and
   `log2_max_pic_order_cnt_lsb_minus4` (H.264 / HEVC) with

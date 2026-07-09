@@ -42,7 +42,7 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use oxideav_bitstream::{h264, h266, hevc, mpeg2, vc1, vp8, vp9};
+use oxideav_bitstream::{av1, h264, h266, hevc, mpeg2, nal, vc1, vp8, vp9};
 
 fuzz_target!(|data: &[u8]| {
     // Run every single-arg parser at a handful of byte offsets so a
@@ -65,6 +65,13 @@ fuzz_target!(|data: &[u8]| {
     drive_hevc_with_context(data);
     drive_h266_with_context(data);
     drive_vc1_with_context(data);
+
+    // Parse→write→parse fixed-point invariants: whenever a parse
+    // succeeds, the writer must accept the parsed struct and the
+    // re-parse must reproduce it exactly.
+    drive_h264_writer_roundtrips(data);
+    drive_av1_metadata_roundtrip(data);
+    drive_framing_roundtrips(data);
 });
 
 /// Choose up to four offsets into `data` to re-run the context-free
@@ -99,6 +106,25 @@ fn drive_single_arg_parsers(slice: &[u8]) {
     let _ = h264::parse_aud_nal(slice);
     // Full Annex-B walker over arbitrary bytes.
     let _ = h264::parse_idr_only(slice);
+    // SEI framing + typed decoders (SPS-independent families; the
+    // SPS-coupled ones run in drive_h264_with_context).
+    if let Ok(msgs) = h264::sei::parse_sei_rbsp(slice) {
+        for m in &msgs {
+            let _ = h264::sei::decode_sei_message(m, None);
+        }
+    }
+    let _ = h264::sei::parse_sei_nal(slice);
+
+    // AV1 metadata OBU payload parser.
+    let _ = av1::parse_metadata_obu(slice);
+    let _ = av1::parse_sequence_header(slice);
+
+    // NAL framing converters at every legal prefix width.
+    for size in 1..=4usize {
+        let _ = nal::split_length_prefixed(slice, size);
+        let _ = nal::length_prefixed_to_annex_b(slice, size);
+        let _ = nal::annex_b_to_length_prefixed(slice, size);
+    }
 
     // HEVC NAL-level parsers.
     let _ = hevc::parse_vps_nal(slice);
@@ -106,6 +132,18 @@ fn drive_single_arg_parsers(slice: &[u8]) {
     let _ = hevc::parse_pps_nal(slice);
     let _ = hevc::parse_aud_nal(slice);
     let _ = hevc::parse_idr_only(slice);
+    // HEVC SEI framing + typed decoders (all SPS-independent), plus
+    // the framing writer fixed point.
+    if let Ok(msgs) = hevc::sei::parse_sei_rbsp(slice) {
+        for m in &msgs {
+            let _ = hevc::sei::decode_sei_message(m);
+        }
+        if let Ok(rbsp) = hevc::sei::write_sei_rbsp(&msgs) {
+            let re = hevc::sei::parse_sei_rbsp(&rbsp).expect("written HEVC SEI re-parses");
+            assert_eq!(re, msgs, "HEVC SEI framing fixed point");
+        }
+    }
+    let _ = hevc::sei::parse_sei_nal(slice);
 
     // H.266 parsers take the NAL body (2-byte header + payload).
     let _ = h266::parse_nal_header(slice);
@@ -151,6 +189,13 @@ fn drive_h264_with_context(data: &[u8]) {
     // the slice parser is contracted to accept.
     if let (Ok(sps), Ok(pps)) = (h264::parse_sps(head), parse_h264_pps_from(head)) {
         let _ = h264::parse_slice_header_minimal(tail, nal_unit_type, &sps, &pps);
+        // SPS-coupled SEI decoders (buffering_period / pic_timing read
+        // u(v) fields whose widths come from the recovered SPS's HRD).
+        if let Ok(msgs) = h264::sei::parse_sei_rbsp(tail) {
+            for m in &msgs {
+                let _ = h264::sei::decode_sei_message(m, Some(&sps));
+            }
+        }
     }
 }
 
@@ -186,6 +231,74 @@ fn drive_h266_with_context(data: &[u8]) {
 
     if let Ok(sps) = h266::parse_sps(head) {
         let _ = h266::parse_picture_header_with_sps(tail, &sps);
+    }
+}
+
+/// H.264 parse→write→parse fixed points: SPS, PPS (both context
+/// modes) and SEI framing. A successful parse means the writer must
+/// accept the struct and re-parsing the written bytes must reproduce
+/// it exactly.
+fn drive_h264_writer_roundtrips(data: &[u8]) {
+    if let Ok(sps) = h264::parse_sps(data) {
+        let rbsp = h264::write_sps(&sps).expect("writer accepts every parsed SPS");
+        let re = h264::parse_sps(&rbsp).expect("written SPS re-parses");
+        assert_eq!(re, sps, "SPS parse→write→parse fixed point");
+
+        // PPS with the recovered SPS as context.
+        let mid = data.len() / 2;
+        if let Ok(pps) = h264::parse_pps_with_sps(&data[mid..], &sps) {
+            let rbsp = h264::write_pps(&pps).expect("writer accepts every parsed PPS");
+            let re = h264::parse_pps_with_sps(&rbsp, &sps).expect("written PPS re-parses");
+            assert_eq!(re, pps, "PPS parse→write→parse fixed point");
+        }
+    }
+    if let Ok(pps) = h264::parse_pps(data) {
+        let rbsp = h264::write_pps(&pps).expect("writer accepts every parsed context-free PPS");
+        let re = h264::parse_pps(&rbsp).expect("written PPS re-parses");
+        assert_eq!(re, pps);
+    }
+    if let Ok(msgs) = h264::sei::parse_sei_rbsp(data) {
+        if let Ok(rbsp) = h264::sei::write_sei_rbsp(&msgs) {
+            let re = h264::sei::parse_sei_rbsp(&rbsp).expect("written SEI re-parses");
+            assert_eq!(re, msgs, "SEI framing fixed point");
+        }
+    }
+}
+
+/// AV1 metadata parse→write→parse fixed point.
+fn drive_av1_metadata_roundtrip(data: &[u8]) {
+    if let Ok(meta) = av1::parse_metadata_obu(data) {
+        // Parsed payloads never end in 0x00 (the parser strips the
+        // trailing padding), so the writer must accept them.
+        let payload = av1::write_metadata_obu(&meta).expect("writer accepts parsed metadata");
+        let re = av1::parse_metadata_obu(&payload).expect("written metadata re-parses");
+        assert_eq!(re, meta, "metadata parse→write→parse fixed point");
+    }
+}
+
+/// Framing-converter invariants: a length-prefixed stream that splits
+/// cleanly must re-frame to Annex-B and back byte-identically.
+fn drive_framing_roundtrips(data: &[u8]) {
+    for size in 1..=4usize {
+        let Ok(bodies) = nal::split_length_prefixed(data, size) else {
+            continue;
+        };
+        let ab = nal::length_prefixed_to_annex_b(data, size)
+            .expect("splittable stream converts to Annex-B");
+        // The byte-identical fixed point only holds when the framing
+        // is unambiguous under Annex-B: every body non-empty (two
+        // consecutive start codes collapse an empty unit) and no body
+        // containing a raw start-code pattern (real NAL bodies carry
+        // emulation prevention; arbitrary fuzz bytes need not).
+        let clean = !ab.is_empty()
+            && bodies.iter().all(|n| {
+                !n.is_empty() && !n.windows(3).any(|w| w[0] == 0 && w[1] == 0 && w[2] == 1)
+            });
+        if clean {
+            let lp =
+                nal::annex_b_to_length_prefixed(&ab, size).expect("converted stream converts back");
+            assert_eq!(lp, data, "length-prefixed→Annex-B→length-prefixed");
+        }
     }
 }
 

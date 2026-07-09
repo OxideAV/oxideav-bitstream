@@ -31,21 +31,24 @@ three HW bridges share, without the SW-codec baggage.
 
 | | H.264 | HEVC | H.266 | AV1 |
 | - | - | - | - | - |
-| Annex-B / OBU framing | yes | yes | yes | yes (leb128 sizes) |
+| Annex-B / OBU framing | yes | yes | yes | yes (leb128 sizes, OBU walker + emitter) |
 | NAL header decode | yes | yes | yes | n/a |
-| Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | yes | yes | structural VPS (7.3.2.3, single-layer) + SPS (7.3.2.4 + 7.3.3) | yes |
-| Picture header (PPS / Frame-Header OBU) | yes | yes | structural PPS (7.3.2.5 prefix) + PH structural prefix (7.3.2.7 / 7.3.2.8 through `ph_pic_parameter_set_id`) plus an SPS-context variant (`parse_picture_header_with_sps`) that extends through `ph_pic_order_cnt_lsb` u(v) and `ph_recovery_poc_cnt` ue(v) | yes |
+| Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | **complete** — scaling lists (§7.3.2.1.1.1) + full VUI/HRD (Annex E) | **complete** — scaling lists (§7.3.4), PCM, ST-RPS w/ §7.4.8 inter-set derivation, LT-RPS, VUI/HRD (§E.2.1–E.2.3), range extension | structural VPS (7.3.2.3, single-layer) + SPS (7.3.2.4 + 7.3.3) | yes |
+| Picture parameter set (PPS / Frame-Header OBU) | **complete** incl. scaling lists via `parse_pps_with_sps` | **complete** — tiles, WPP, scaling lists, range extension | structural PPS (7.3.2.5 prefix) + PH structural prefix (7.3.2.8) plus `parse_picture_header_with_sps` through `ph_recovery_poc_cnt` | yes |
+| SPS/PPS **writers** (byte-exact parse→write inverses) | yes — pinned byte-exact on both fixtures | deferred | deferred | n/a |
+| SEI / metadata | framing (§7.3.2.3) + buffering_period / pic_timing / itu_t_t35 / user_data_unregistered / recovery_point (§D.1), writer included | deferred | deferred | metadata OBU §5.8 — HDR CLL/MDCV, scalability structure, ITU-T T.35, timecode; parse + write |
 | Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
 | Access unit delimiter (AUD) parse + write | yes (`primary_pic_type` u(3)) | yes (`pic_type` u(3), incl. reserved-value pass-through) | yes (`aud_irap_or_gdr_flag` u(1) + `aud_pic_type` u(3), incl. reserved-value pass-through) | n/a (OBU framing handles AU boundaries) |
 | DCT, entropy decode, motion compensation, in-loop filtering | no | no | no | no |
-| Scaling lists | rejected | rejected | n/a | n/a |
 | FMO / ASO / multiple slice groups | rejected | n/a | n/a | n/a |
-| Tiles / WPP | n/a | rejected | n/a | n/a |
+| SCC / multilayer / 3D extension payloads | n/a | rejected (presence flags parse) | n/a | n/a |
 | AV1 decoder model / operating points beyond [0] / film grain | n/a | n/a | n/a | rejected |
 
 The crate refuses inputs that fall outside the supported envelope with
 `BitstreamError::Unsupported(reason)` rather than silently producing
-garbage parameter buffers.
+garbage parameter buffers, and enforces the specs' declared value
+ranges (`delta_scale`, `cpb_cnt_minus1`, DPB sizes, RPS counts, …) so
+hostile counts can never drive unbounded loops or oversized reads.
 
 H.266 (VVC), VP9, VP8, MPEG-2 and VC-1 have landed as additional
 modules; their scope is incremental — see each module's rustdoc for
@@ -96,6 +99,13 @@ Round-trip contract: `ebsp_to_rbsp(&rbsp_to_ebsp(x)) == x` for any
 byte slice `x`, including the trailing-zero guard case
 (`x = [.., 0x00, 0x00]` → `[.., 0x00, 0x00, 0x03]` → `[.., 0x00, 0x00]`).
 
+`nal` also converts between the two elementary-stream framings:
+`annex_b_to_length_prefixed` / `length_prefixed_to_annex_b` /
+`split_length_prefixed` re-frame Annex-B start-code streams to and
+from the 1–4-byte big-endian length-prefixed form used by ISO
+base-media sample framing, validating every declared length against
+the actual bytes.
+
 ## Bit-IO descriptors
 
 The shared `BitReader` / `BitWriter` cover every syntax descriptor the
@@ -139,12 +149,15 @@ input.
   primitives (`u(n)` / `u64(n)` / `ue` / `se` / `ns` / `su` / `uvlc` /
   `le` / skips / peeks) plus the AV1 LEB128 / OBU walkers and the IVF
   demuxer, and fuzzes the writer→reader round-trip invariant.
-- `parsers` — drives the per-codec header parsers (H.264, HEVC, H.266,
-  MPEG-2, VC-1, VP8, VP9) at multiple input-derived byte offsets, and
-  feeds the context-dependent slice / picture / entry-point parsers an
+- `parsers` — drives the per-codec header parsers (H.264 incl. SEI,
+  HEVC, H.266, MPEG-2, VC-1, VP8, VP9, AV1 metadata, framing
+  converters) at multiple input-derived byte offsets, feeds the
+  context-dependent slice / picture / SEI / entry-point parsers an
   SPS / PPS / sequence-header context recovered from a prefix of the
-  same input. It found a panic where a malformed H.264 / HEVC SPS with
-  an out-of-range `log2_max_frame_num_minus4` /
+  same input, and asserts the parse→write→parse fixed points (H.264
+  SPS/PPS/SEI, AV1 metadata, length-prefixed framing) on every
+  successful parse. It found a panic where a malformed H.264 / HEVC
+  SPS with an out-of-range `log2_max_frame_num_minus4` /
   `log2_max_pic_order_cnt_lsb_minus4` drove a `>32`-bit `BitReader::u`
   read in the slice-header parser; the SPS parsers now reject those
   values per H.264 §7.4.2.1.1 / H.265 §7.4.3.2.1.
