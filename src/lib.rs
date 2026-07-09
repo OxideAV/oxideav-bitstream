@@ -41,11 +41,9 @@
 //!
 //! ## Workspace clean-room policy
 //!
-//! Bitstream syntax is taken from the relevant ITU-T / Khronos /
-//! AOMedia spec PDFs only. We deliberately do not consult ffmpeg /
-//! libavcodec, x264, x265, libde265, libaom, dav1d, rav1e or libgav1
-//! source. ffmpeg / aomenc are used only as black-box CLI tools to
-//! generate test fixtures.
+//! Bitstream syntax is taken from the relevant ITU-T / AOMedia spec
+//! PDFs only. Test fixtures are produced by reference encoders invoked
+//! strictly as black-box CLI tools.
 
 #![forbid(unsafe_code)]
 #![deny(rust_2018_idioms)]

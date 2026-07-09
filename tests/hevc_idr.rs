@@ -1,4 +1,4 @@
-//! HEVC minimal-IDR parser end-to-end test against an x265-encoded
+//! HEVC minimal-IDR parser end-to-end test against a reference-encoder-produced
 //! 320×240 single-frame fixture.
 
 use oxideav_bitstream::hevc::{
@@ -21,10 +21,10 @@ fn find_nal_of_type(stream: &[u8], t: u8) -> Option<&[u8]> {
 fn hevc_parses_via_idr_only_and_dimensions_match() {
     let parsed = parse_idr_only(HEVC_MAIN).expect("parse_idr_only HEVC");
 
-    // x265 default Main profile = profile_idc 1.
+    // Fixture default Main profile = profile_idc 1.
     assert_eq!(parsed.sps.profile_tier_level.general_profile_idc, 1);
 
-    // 320×240 → general_level_idc is 30 (Level 1) for x265 ultrafast at
+    // 320×240 → general_level_idc is 30 (Level 1) for the fixture encoding at
     // this resolution; we don't pin the exact value here, just sanity-check.
     assert!(
         parsed.sps.profile_tier_level.general_level_idc > 0,
@@ -85,11 +85,11 @@ fn hevc_pps_extended_fields_parse() {
     // The Round 1 parser stopped after `entropy_coding_sync_enabled_flag`.
     // Round 5 extends it through the deblocking-filter, lists-modification,
     // parallel-merge and slice-segment-header-extension fields. Verify the
-    // extended fields parse on the existing x265 fixture without rejecting
+    // extended fields parse on the existing reference fixture without rejecting
     // the input.
     let parsed = parse_idr_only(HEVC_MAIN).expect("parse_idr_only HEVC");
 
-    // Concrete numeric assertions for the new PPS fields. The x265
+    // Concrete numeric assertions for the new PPS fields. The reference
     // ultrafast preset enables loop_filter_across_slices but does NOT
     // emit the deblocking-filter control block, so all of the
     // deblocking-related fields stay at their defaults.

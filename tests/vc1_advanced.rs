@@ -1,6 +1,6 @@
 //! VC-1 Advanced-profile parser end-to-end test against an excerpt
-//! from a 1920×1080 sample (the local ffmpeg `archive/all/` set —
-//! ffmpeg-7.1's build does not ship a VC-1 encoder, so we cannot
+//! from a 1920×1080 sample (a conformance archive sample —
+//! no black-box VC-1 encoder was available, so we cannot
 //! synthesise a fresh fixture; the carved 8 KiB excerpt of the
 //! upstream sample covers the seq+entry+first frame).
 

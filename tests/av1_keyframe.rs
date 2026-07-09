@@ -1,5 +1,5 @@
 //! AV1 minimal keyframe parser end-to-end test against an
-//! aomenc-encoded 320×240 single-keyframe OBU fixture.
+//! reference-encoder-produced 320×240 single-keyframe OBU fixture.
 
 use oxideav_bitstream::av1::{parse_obu_stream, FRAME_TYPE_KEY};
 
@@ -10,9 +10,9 @@ fn av1_parses_keyframe_obu_stream() {
     let parsed = parse_obu_stream(AV1).expect("parse_obu_stream");
 
     let s = &parsed.sequence_header;
-    // aomenc default → seq_profile 0 (Main).
+    // The reference encoder default → seq_profile 0 (Main).
     assert_eq!(s.seq_profile, 0, "expected seq_profile=0 (Main)");
-    // Single image — for our fixture aomenc may or may not set
+    // Single image — for our fixture the reference encoder may or may not set
     // still_picture, but max_frame_* must be 320×240.
     assert_eq!(s.max_frame_width(), 320);
     assert_eq!(s.max_frame_height(), 240);

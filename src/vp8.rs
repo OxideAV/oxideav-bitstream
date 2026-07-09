@@ -49,7 +49,7 @@ pub struct Vp8FrameHeader {
     /// 0 = keyframe (RFC 6386 calls this KEY_FRAME), 1 = interframe.
     pub frame_type: u8,
     /// Bitstream version (0..3). RFC 6386 §9.1 — only 0 is in
-    /// widespread use; libvpx may emit 1, 2 or 3 to select the
+    /// widespread use; encoders may emit 1, 2 or 3 to select the
     /// loop-filter / motion-comp tweaks.
     pub version: u8,
     /// `show_frame` bit. False here means the encoder emitted an

@@ -1,4 +1,4 @@
-//! VP8 keyframe parser end-to-end test against an ffmpeg/libvpx-encoded
+//! VP8 keyframe parser end-to-end test against an reference-encoder-produced
 //! 320×240 single-frame IVF fixture.
 
 use oxideav_bitstream::ivf::{parse_all, parse_header, IVF_FOURCC_VP80};
@@ -24,7 +24,7 @@ fn vp8_keyframe_parses_to_320x240_show_frame_first_part_size_896() {
     assert_eq!(h.frame_type, 0, "must be a keyframe");
     assert_eq!(h.version, 0);
     assert!(h.show_frame);
-    // libvpx's first_part_size for a 320×240 testsrc2 keyframe at the
+    // The fixture's first_part_size for a 320×240 testsrc2 keyframe at the
     // default settings: 896 bytes (this is the size of the bool-coded
     // first partition, not including the 3-byte tag or the 7-byte
     // uncompressed-data-chunk).

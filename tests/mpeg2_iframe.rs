@@ -1,5 +1,5 @@
 //! MPEG-2 sequence/picture/extension parser end-to-end test against
-//! an ffmpeg-encoded 320×240 single-I-frame fixture lifted from
+//! a reference-encoder-produced 320×240 single-I-frame fixture lifted from
 //! oxideav-vdpau's Round 4 tests.
 
 use oxideav_bitstream::mpeg2::{
@@ -32,7 +32,7 @@ fn mpeg2_sequence_header_is_320x240() {
     assert_eq!(s.vertical_size, 240);
     assert_eq!(s.aspect_ratio_information, 2);
     assert_eq!(s.frame_rate_code, 2);
-    // ffmpeg's mpeg2video encoder emits the maximal 18-bit value for an
+    // The reference MPEG-2 encoder emits the maximal 18-bit value for an
     // unconstrained bitrate when the user did not pass -b:v.
     assert_eq!(s.bit_rate, 0x3FFFF);
     assert!(!s.constrained_parameters_flag);
@@ -100,7 +100,7 @@ fn mpeg2_sequence_extension_main_profile_progressive_420() {
         })
         .expect("sequence_extension present");
     let e = parse_sequence_extension(&FIXTURE[ext_off..]).expect("parse seq ext");
-    // ffmpeg's mpeg2video defaults emit Main@Main (PLI = 0x48).
+    // The reference encoder defaults emit Main@Main (PLI = 0x48).
     assert_eq!(e.profile_and_level_indication, 0x48);
     assert!(e.progressive_sequence);
     assert_eq!(e.chroma_format, 1, "4:2:0");

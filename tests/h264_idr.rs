@@ -1,4 +1,4 @@
-//! H.264 minimal-IDR parser end-to-end tests against ffmpeg/x264-encoded
+//! H.264 minimal-IDR parser end-to-end tests against reference-encoder-produced
 //! 320×240 single-frame fixtures.
 
 use oxideav_bitstream::h264::{
@@ -19,10 +19,10 @@ fn find_nal_of_type(stream: &[u8], t: u8) -> Option<&[u8]> {
 fn baseline_parses_via_idr_only_and_dimensions_match() {
     let parsed = parse_idr_only(BASELINE).expect("parse_idr_only(baseline)");
 
-    // x264 baseline emits profile_idc = 66.
+    // Baseline-profile reference encoding emits profile_idc = 66.
     assert_eq!(parsed.sps.profile_idc, 66, "baseline profile_idc");
     // Level depends on bitrate and resolution; for 320×240 ultrafast
-    // x264 picks level 1.1 → 11.
+    // The fixture encodes level 1.1 → 11.
     assert_eq!(parsed.sps.level_idc, 11, "baseline level_idc");
     assert_eq!(parsed.sps.chroma_format_idc, 1, "baseline chroma 4:2:0");
     assert_eq!(parsed.sps.bit_depth_luma_minus8, 0, "8-bit luma");
@@ -52,7 +52,7 @@ fn baseline_parses_via_idr_only_and_dimensions_match() {
 #[test]
 fn high_profile_parses_via_idr_only() {
     let parsed = parse_idr_only(HIGH).expect("parse_idr_only(high)");
-    // x264 high → profile_idc 100.
+    // High-profile fixture → profile_idc 100.
     assert_eq!(parsed.sps.profile_idc, 100, "high profile_idc");
     assert_eq!(parsed.sps.chroma_format_idc, 1);
     assert_eq!(parsed.sps.bit_depth_luma_minus8, 0);

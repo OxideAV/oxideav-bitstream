@@ -715,6 +715,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     profile_idc, level_idc, coded width/height, slice_type=I, idr_pic_id=0.
   - `tests/hevc_idr.rs` — Main-profile fixture, asserts profile/level,
     pic_width/height_in_luma_samples, chroma_format=1, bit_depth=8.
-  - `tests/av1_keyframe.rs` — aomenc-produced single keyframe OBU
+  - `tests/av1_keyframe.rs` — reference-encoder-produced single keyframe OBU
     stream, asserts max_frame_width/height, profile, bit_depth,
     monochrome=0, frame_type=KEY_FRAME.

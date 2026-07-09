@@ -1,5 +1,5 @@
 //! VP9 uncompressed-header parser end-to-end test against an
-//! ffmpeg/libvpx-vp9-encoded 320×240 single-keyframe IVF fixture
+//! reference-encoder-produced 320×240 single-keyframe IVF fixture
 //! lifted from oxideav-vdpau's Round 4 tests.
 
 use oxideav_bitstream::ivf::{parse_all, IVF_FOURCC_VP90};
@@ -47,7 +47,7 @@ fn vp9_keyframe_parses_to_320x240_profile0_8bit() {
 
     // The uncompressed header occupies 14 bytes including alignment,
     // and the compressed header is 3596 bytes. Both numbers come
-    // from libvpx-vp9's encode of the testsrc2 320×240 fixture.
+    // from the reference encode of the testsrc2 320×240 fixture.
     assert_eq!(h.uncompressed_header_size, 14);
     assert_eq!(h.compressed_header_size, 3596);
 

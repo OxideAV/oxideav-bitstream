@@ -71,10 +71,10 @@ pub struct ObuHeader {
 /// the *next* OBU begins.
 ///
 /// If the OBU has no `obu_size` field and we're inside a
-/// Low-Overhead-Bitstream-Format stream (which is what aomenc's
-/// `--obu` produces), the OBU body is *required* to have a
-/// `obu_size` field — Section 5 mandates `obu_has_size_field == 1`
-/// for all OBUs in the LOBF. We enforce that here.
+/// Low-Overhead-Bitstream-Format stream, the OBU body is *required*
+/// to have a `obu_size` field — Section 5 mandates
+/// `obu_has_size_field == 1` for all OBUs in the LOBF. We enforce
+/// that here.
 pub fn read_obu(
     bytes: &[u8],
     offset: usize,
