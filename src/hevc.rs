@@ -482,28 +482,51 @@ fn parse_hrd_parameters(
     r: &mut BitReader<'_>,
     max_num_sub_layers_minus1: u8,
 ) -> Result<HevcHrdParameters, BitstreamError> {
-    let mut hrd = HevcHrdParameters {
-        nal_hrd_parameters_present_flag: r.u(1) != 0,
-        vcl_hrd_parameters_present_flag: r.u(1) != 0,
-        ..HevcHrdParameters::default()
+    parse_hrd_parameters_inner(r, max_num_sub_layers_minus1, None)
+}
+
+/// §E.2.2 with an explicit `commonInfPresentFlag` context: `inherit`
+/// is `None` for `commonInfPresentFlag == 1` (the common-info block
+/// is read from the stream) and `Some(prev)` for
+/// `commonInfPresentFlag == 0` (the VPS case with
+/// `cprms_present_flag[i] == 0`, where the common parameters "are
+/// derived to be the same as the (i − 1)-th hrd_parameters()
+/// syntax structure" per §7.4.3.1).
+fn parse_hrd_parameters_inner(
+    r: &mut BitReader<'_>,
+    max_num_sub_layers_minus1: u8,
+    inherit: Option<&HevcHrdParameters>,
+) -> Result<HevcHrdParameters, BitstreamError> {
+    let mut hrd = if let Some(prev) = inherit {
+        HevcHrdParameters {
+            sub_layers: Vec::new(),
+            ..prev.clone()
+        }
+    } else {
+        let mut hrd = HevcHrdParameters {
+            nal_hrd_parameters_present_flag: r.u(1) != 0,
+            vcl_hrd_parameters_present_flag: r.u(1) != 0,
+            ..HevcHrdParameters::default()
+        };
+        if hrd.nal_hrd_parameters_present_flag || hrd.vcl_hrd_parameters_present_flag {
+            hrd.sub_pic_hrd_params_present_flag = r.u(1) != 0;
+            if hrd.sub_pic_hrd_params_present_flag {
+                hrd.tick_divisor_minus2 = r.u(8) as u8;
+                hrd.du_cpb_removal_delay_increment_length_minus1 = r.u(5) as u8;
+                hrd.sub_pic_cpb_params_in_pic_timing_sei_flag = r.u(1) != 0;
+                hrd.dpb_output_delay_du_length_minus1 = r.u(5) as u8;
+            }
+            hrd.bit_rate_scale = r.u(4) as u8;
+            hrd.cpb_size_scale = r.u(4) as u8;
+            if hrd.sub_pic_hrd_params_present_flag {
+                hrd.cpb_size_du_scale = r.u(4) as u8;
+            }
+            hrd.initial_cpb_removal_delay_length_minus1 = r.u(5) as u8;
+            hrd.au_cpb_removal_delay_length_minus1 = r.u(5) as u8;
+            hrd.dpb_output_delay_length_minus1 = r.u(5) as u8;
+        }
+        hrd
     };
-    if hrd.nal_hrd_parameters_present_flag || hrd.vcl_hrd_parameters_present_flag {
-        hrd.sub_pic_hrd_params_present_flag = r.u(1) != 0;
-        if hrd.sub_pic_hrd_params_present_flag {
-            hrd.tick_divisor_minus2 = r.u(8) as u8;
-            hrd.du_cpb_removal_delay_increment_length_minus1 = r.u(5) as u8;
-            hrd.sub_pic_cpb_params_in_pic_timing_sei_flag = r.u(1) != 0;
-            hrd.dpb_output_delay_du_length_minus1 = r.u(5) as u8;
-        }
-        hrd.bit_rate_scale = r.u(4) as u8;
-        hrd.cpb_size_scale = r.u(4) as u8;
-        if hrd.sub_pic_hrd_params_present_flag {
-            hrd.cpb_size_du_scale = r.u(4) as u8;
-        }
-        hrd.initial_cpb_removal_delay_length_minus1 = r.u(5) as u8;
-        hrd.au_cpb_removal_delay_length_minus1 = r.u(5) as u8;
-        hrd.dpb_output_delay_length_minus1 = r.u(5) as u8;
-    }
     for _ in 0..=max_num_sub_layers_minus1 {
         let mut sl = HevcHrdSubLayer {
             fixed_pic_rate_general_flag: r.u(1) != 0,
@@ -716,15 +739,40 @@ fn parse_vui_parameters(
     Ok(vui)
 }
 
-/// Video parameter set (7.3.2.1). Reduced — most VPS contents are
-/// not consumed by the slice-data HW APIs (they look at the SPS).
+/// Video parameter set — the complete §7.3.2.1 walk through
+/// `vps_extension_flag` (extension payloads themselves are Annex-F
+/// material and are not decoded).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HevcVps {
     pub vps_video_parameter_set_id: u8,
+    pub vps_base_layer_internal_flag: bool,
+    pub vps_base_layer_available_flag: bool,
     pub vps_max_layers_minus1: u8,
     pub vps_max_sub_layers_minus1: u8,
     pub vps_temporal_id_nesting_flag: bool,
     pub profile_tier_level: HevcProfileTierLevel,
+    /// `vps_max_dec_pic_buffering_minus1[vps_max_sub_layers_minus1]`
+    /// (the highest sub-layer — the one DPB sizing uses, §7.4.3.1).
+    pub vps_max_dec_pic_buffering_minus1: u32,
+    pub vps_max_num_reorder_pics: u32,
+    pub vps_max_latency_increase_plus1: u32,
+    pub vps_max_layer_id: u8,
+    pub vps_num_layer_sets_minus1: u32,
+    /// `layer_id_included_flag[i][j]` packed as a bitmask per layer
+    /// set (bit `j` set ⇔ layer `j` included). Entry 0 covers layer
+    /// set 1 — layer set 0 is fixed by the spec to the base layer
+    /// only and carries no coded flags.
+    pub layer_id_included: Vec<u64>,
+    pub vps_timing_info_present_flag: bool,
+    pub vps_num_units_in_tick: u32,
+    pub vps_time_scale: u32,
+    pub vps_poc_proportional_to_timing_flag: bool,
+    pub vps_num_ticks_poc_diff_one_minus1: u32,
+    /// `(hrd_layer_set_idx[i], hrd_parameters(i))` — for entries with
+    /// `cprms_present_flag[i] == 0` the common-info fields are
+    /// inherited from entry `i − 1` per §7.4.3.1.
+    pub hrd_parameters: Vec<(u32, HevcHrdParameters)>,
+    pub vps_extension_flag: bool,
 }
 
 /// Sequence parameter set (7.3.2.2).
@@ -1049,15 +1097,90 @@ pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
         vps_video_parameter_set_id: r.u(4) as u8,
         ..HevcVps::default()
     };
-    let _vps_base_layer_internal_flag = r.u(1);
-    let _vps_base_layer_available_flag = r.u(1);
+    vps.vps_base_layer_internal_flag = r.u(1) != 0;
+    vps.vps_base_layer_available_flag = r.u(1) != 0;
     vps.vps_max_layers_minus1 = r.u(6) as u8;
     vps.vps_max_sub_layers_minus1 = r.u(3) as u8;
     vps.vps_temporal_id_nesting_flag = r.u(1) != 0;
     let _vps_reserved_0xffff_16bits = r.u(16);
     vps.profile_tier_level = parse_profile_tier_level(&mut r, true, vps.vps_max_sub_layers_minus1)?;
-    // Remaining VPS fields (vps_sub_layer_ordering_info, layer_id_included…,
-    // vps_num_hrd_parameters, VUI, extensions) are not consumed.
+
+    // Sub-layer ordering info — same shape as the SPS block: keep the
+    // highest sub-layer's entry (§7.4.3.1).
+    let ordering_info_present = r.u(1);
+    let start = if ordering_info_present != 0 {
+        0
+    } else {
+        vps.vps_max_sub_layers_minus1 as usize
+    };
+    for _ in start..=vps.vps_max_sub_layers_minus1 as usize {
+        vps.vps_max_dec_pic_buffering_minus1 = r.ue()?;
+        vps.vps_max_num_reorder_pics = r.ue()?;
+        vps.vps_max_latency_increase_plus1 = r.ue()?;
+    }
+    // §7.4.3.1 / §A.4.2: DPB size caps at 16 like the SPS field.
+    if vps.vps_max_dec_pic_buffering_minus1 > 15 {
+        return Err(BitstreamError::invalid(format!(
+            "VPS vps_max_dec_pic_buffering_minus1={} (MaxDpbSize caps at 16, §A.4.2)",
+            vps.vps_max_dec_pic_buffering_minus1
+        )));
+    }
+
+    vps.vps_max_layer_id = r.u(6) as u8;
+    vps.vps_num_layer_sets_minus1 = r.ue()?;
+    // §7.4.3.1: 0..=1023 — bounds the flag matrix below.
+    if vps.vps_num_layer_sets_minus1 > 1023 {
+        return Err(BitstreamError::invalid(format!(
+            "VPS vps_num_layer_sets_minus1={} (must be 0..=1023, §7.4.3.1)",
+            vps.vps_num_layer_sets_minus1
+        )));
+    }
+    for _ in 1..=vps.vps_num_layer_sets_minus1 {
+        let mut mask = 0u64;
+        for j in 0..=vps.vps_max_layer_id {
+            if r.u(1) != 0 {
+                mask |= 1 << j;
+            }
+        }
+        vps.layer_id_included.push(mask);
+    }
+
+    vps.vps_timing_info_present_flag = r.u(1) != 0;
+    if vps.vps_timing_info_present_flag {
+        vps.vps_num_units_in_tick = r.u(32);
+        vps.vps_time_scale = r.u(32);
+        vps.vps_poc_proportional_to_timing_flag = r.u(1) != 0;
+        if vps.vps_poc_proportional_to_timing_flag {
+            vps.vps_num_ticks_poc_diff_one_minus1 = r.ue()?;
+        }
+        let vps_num_hrd_parameters = r.ue()?;
+        // §7.4.3.1: 0..=vps_num_layer_sets_minus1 + 1.
+        if vps_num_hrd_parameters > vps.vps_num_layer_sets_minus1 + 1 {
+            return Err(BitstreamError::invalid(format!(
+                "VPS vps_num_hrd_parameters={vps_num_hrd_parameters} exceeds \
+                 vps_num_layer_sets_minus1 + 1 (§7.4.3.1)"
+            )));
+        }
+        for i in 0..vps_num_hrd_parameters {
+            let hrd_layer_set_idx = r.ue()?;
+            // cprms_present_flag[0] is inferred to 1 (§7.4.3.1).
+            let cprms_present = if i > 0 { r.u(1) != 0 } else { true };
+            let hrd = if cprms_present {
+                parse_hrd_parameters_inner(&mut r, vps.vps_max_sub_layers_minus1, None)?
+            } else {
+                let prev = &vps
+                    .hrd_parameters
+                    .last()
+                    .expect("i > 0 implies a previous entry")
+                    .1;
+                parse_hrd_parameters_inner(&mut r, vps.vps_max_sub_layers_minus1, Some(prev))?
+            };
+            vps.hrd_parameters.push((hrd_layer_set_idx, hrd));
+        }
+    }
+    vps.vps_extension_flag = r.u(1) != 0;
+    // vps_extension() payload (Annex F) is not decoded; the remaining
+    // bits are extension data + rbsp_trailing_bits.
     Ok(vps)
 }
 
@@ -1943,6 +2066,143 @@ mod tests {
         w.write_ue(65).unwrap();
         let err = parse_sps_nal(&sps_nal_from(w)).unwrap_err();
         assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    /// Emit the VPS body through profile_tier_level (single
+    /// sub-layer), leaving the writer at
+    /// `vps_sub_layer_ordering_info_present_flag`.
+    fn write_vps_prefix(w: &mut crate::bit_writer::BitWriter) {
+        w.write_bits(0, 4); // vps_video_parameter_set_id
+        w.write_bit(1); // vps_base_layer_internal_flag
+        w.write_bit(1); // vps_base_layer_available_flag
+        w.write_bits(0, 6); // vps_max_layers_minus1
+        w.write_bits(0, 3); // vps_max_sub_layers_minus1
+        w.write_bit(1); // vps_temporal_id_nesting_flag
+        w.write_bits(0xFFFF, 16); // vps_reserved_0xffff_16bits
+                                  // profile_tier_level(1, 0):
+        w.write_bits(0, 2);
+        w.write_bit(0);
+        w.write_bits(1, 5);
+        w.write_bits(0x6000_0000, 32);
+        w.write_bits(0, 4);
+        w.write_bits(0, 32);
+        w.write_bits(0, 11);
+        w.write_bit(0);
+        w.write_bits(63, 8); // general_level_idc
+    }
+
+    #[test]
+    fn vps_full_walk_with_layer_sets_timing_and_inherited_hrd() {
+        let mut w = crate::bit_writer::BitWriter::new();
+        write_vps_prefix(&mut w);
+        w.write_bit(1); // vps_sub_layer_ordering_info_present_flag
+        w.write_ue(4).unwrap(); // vps_max_dec_pic_buffering_minus1
+        w.write_ue(1).unwrap(); // vps_max_num_reorder_pics
+        w.write_ue(0).unwrap(); // vps_max_latency_increase_plus1
+        w.write_bits(1, 6); // vps_max_layer_id = 1
+        w.write_ue(1).unwrap(); // vps_num_layer_sets_minus1 = 1
+                                // layer_id_included_flag[1][0..=1]:
+        w.write_bit(1);
+        w.write_bit(1);
+        w.write_bit(1); // vps_timing_info_present_flag
+        w.write_bits(1001, 32); // vps_num_units_in_tick
+        w.write_bits(30000, 32); // vps_time_scale
+        w.write_bit(1); // vps_poc_proportional_to_timing_flag
+        w.write_ue(0).unwrap(); // vps_num_ticks_poc_diff_one_minus1
+        w.write_ue(2).unwrap(); // vps_num_hrd_parameters = 2
+                                // entry 0 (cprms inferred 1):
+        w.write_ue(0).unwrap(); // hrd_layer_set_idx[0]
+        w.write_bit(1); // nal_hrd_parameters_present_flag
+        w.write_bit(0); // vcl_hrd_parameters_present_flag
+        w.write_bit(0); // sub_pic_hrd_params_present_flag
+        w.write_bits(3, 4); // bit_rate_scale
+        w.write_bits(4, 4); // cpb_size_scale
+        w.write_bits(23, 5); // initial_cpb_removal_delay_length_minus1
+        w.write_bits(15, 5); // au_cpb_removal_delay_length_minus1
+        w.write_bits(5, 5); // dpb_output_delay_length_minus1
+                            // sub-layer 0:
+        w.write_bit(0); // fixed_pic_rate_general_flag
+        w.write_bit(0); // fixed_pic_rate_within_cvs_flag
+        w.write_bit(0); // low_delay_hrd_flag
+        w.write_ue(0).unwrap(); // cpb_cnt_minus1
+        w.write_ue(99).unwrap(); // bit_rate_value_minus1
+        w.write_ue(199).unwrap(); // cpb_size_value_minus1
+        w.write_bit(0); // cbr_flag
+                        // entry 1 with cprms_present_flag = 0 (inherits common info):
+        w.write_ue(1).unwrap(); // hrd_layer_set_idx[1]
+        w.write_bit(0); // cprms_present_flag[1] = 0
+                        // sub-layer 0 (common info inherited from entry 0):
+        w.write_bit(0);
+        w.write_bit(0);
+        w.write_bit(0);
+        w.write_ue(0).unwrap(); // cpb_cnt_minus1
+        w.write_ue(299).unwrap(); // bit_rate_value_minus1
+        w.write_ue(399).unwrap(); // cpb_size_value_minus1
+        w.write_bit(1); // cbr_flag
+        w.write_bit(0); // vps_extension_flag
+        w.write_rbsp_trailing_bits();
+
+        let mut nal = vec![NAL_TYPE_VPS << 1, 0x01];
+        nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
+        let vps = parse_vps_nal(&nal).expect("full VPS parses");
+        assert!(vps.vps_base_layer_internal_flag);
+        assert_eq!(vps.vps_max_dec_pic_buffering_minus1, 4);
+        assert_eq!(vps.vps_max_num_reorder_pics, 1);
+        assert_eq!(vps.vps_max_layer_id, 1);
+        assert_eq!(vps.vps_num_layer_sets_minus1, 1);
+        assert_eq!(vps.layer_id_included, vec![0b11]);
+        assert!(vps.vps_timing_info_present_flag);
+        assert_eq!(vps.vps_num_units_in_tick, 1001);
+        assert_eq!(vps.vps_time_scale, 30000);
+        assert!(vps.vps_poc_proportional_to_timing_flag);
+        assert_eq!(vps.hrd_parameters.len(), 2);
+        let (idx0, h0) = &vps.hrd_parameters[0];
+        assert_eq!(*idx0, 0);
+        assert!(h0.nal_hrd_parameters_present_flag);
+        assert_eq!(h0.bit_rate_scale, 3);
+        assert_eq!(h0.sub_layers[0].nal_cpb[0].bit_rate_value_minus1, 99);
+        let (idx1, h1) = &vps.hrd_parameters[1];
+        assert_eq!(*idx1, 1);
+        // Common info inherited from entry 0 (§7.4.3.1).
+        assert!(h1.nal_hrd_parameters_present_flag);
+        assert_eq!(h1.bit_rate_scale, 3);
+        assert_eq!(h1.cpb_size_scale, 4);
+        assert_eq!(h1.initial_cpb_removal_delay_length_minus1, 23);
+        // But the sub-layer CPB schedule is its own.
+        assert_eq!(h1.sub_layers[0].nal_cpb[0].bit_rate_value_minus1, 299);
+        assert!(h1.sub_layers[0].nal_cpb[0].cbr_flag);
+        assert!(!vps.vps_extension_flag);
+    }
+
+    #[test]
+    fn vps_rejects_out_of_range_layer_sets_and_dpb() {
+        // vps_num_layer_sets_minus1 = 1024 → InvalidData (§7.4.3.1).
+        let mut w = crate::bit_writer::BitWriter::new();
+        write_vps_prefix(&mut w);
+        w.write_bit(1);
+        w.write_ue(4).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_bits(0, 6);
+        w.write_ue(1024).unwrap();
+        let mut nal = vec![NAL_TYPE_VPS << 1, 0x01];
+        nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
+        assert!(matches!(
+            parse_vps_nal(&nal).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+
+        // vps_max_dec_pic_buffering_minus1 = 16 → InvalidData (§A.4.2).
+        let mut w = crate::bit_writer::BitWriter::new();
+        write_vps_prefix(&mut w);
+        w.write_bit(1);
+        w.write_ue(16).unwrap();
+        let mut nal = vec![NAL_TYPE_VPS << 1, 0x01];
+        nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
+        assert!(matches!(
+            parse_vps_nal(&nal).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
     }
 
     #[test]

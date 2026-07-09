@@ -97,6 +97,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SPS/PPS/SEI, HEVC SEI, AV1 metadata, length-prefixed framing) on
   every successful parse.
 
+- hevc: VPS walk completed through `vps_extension_flag` (§7.3.2.1) —
+  base-layer flags, sub-layer ordering info (DPB/reorder/latency,
+  §A.4.2 cap enforced), `vps_max_layer_id` + layer-set inclusion
+  bitmasks (`vps_num_layer_sets_minus1 ≤ 1023` enforced), timing info,
+  and the HRD list with the §7.4.3.1 `cprms_present_flag == 0`
+  common-info inheritance from the previous entry.
+
 ### Fixed
 - hevc: fuzz-found panic — a hostile SPS with out-of-range coding-block
   log2 fields drove `1u32 << CtbLog2SizeY` past 31 in the
