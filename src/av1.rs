@@ -300,6 +300,465 @@ pub fn write_obu(
     Ok((start, out.len()))
 }
 
+// ─────────────────────────── Metadata OBUs (5.8) ─────────────────────────────
+
+/// §6.7.1 `metadata_type` registry values.
+pub const METADATA_TYPE_HDR_CLL: u64 = 1;
+pub const METADATA_TYPE_HDR_MDCV: u64 = 2;
+pub const METADATA_TYPE_SCALABILITY: u64 = 3;
+pub const METADATA_TYPE_ITUT_T35: u64 = 4;
+pub const METADATA_TYPE_TIMECODE: u64 = 5;
+
+/// §5.8.5 `scalability_mode_idc` value that carries an explicit
+/// `scalability_structure()`.
+pub const SCALABILITY_SS: u8 = 14;
+
+/// `metadata_hdr_cll()` — §5.8.3. Content light level, both fields
+/// in candelas per square metre (§6.7.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Av1HdrCll {
+    pub max_cll: u16,
+    pub max_fall: u16,
+}
+
+/// `metadata_hdr_mdcv()` — §5.8.4. Mastering display colour volume.
+/// Chromaticities are 0.16 fixed point; `luminance_max` is 24.8 and
+/// `luminance_min` 18.14 fixed point (§6.7.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Av1HdrMdcv {
+    /// `(primary_chromaticity_x[i], primary_chromaticity_y[i])` in
+    /// R/G/B order (§6.7.4).
+    pub primary_chromaticity: [(u16, u16); 3],
+    pub white_point_chromaticity: (u16, u16),
+    pub luminance_max: u32,
+    pub luminance_min: u32,
+}
+
+/// `metadata_itut_t35()` — §5.8.2.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Av1ItutT35 {
+    pub country_code: u8,
+    /// Present when `country_code == 0xFF`.
+    pub country_code_extension: Option<u8>,
+    /// `itu_t_t35_payload_bytes`, truncated at the last non-zero byte
+    /// per the §5.8.2 trailing-zero-padding note.
+    pub payload: Vec<u8>,
+}
+
+/// One temporal-group entry of `scalability_structure()` (§5.8.6).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Av1TemporalGroupEntry {
+    pub temporal_id: u8,
+    pub temporal_switching_up_point_flag: bool,
+    pub spatial_switching_up_point_flag: bool,
+    pub ref_pic_diffs: Vec<u8>,
+}
+
+/// `scalability_structure()` — §5.8.6.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Av1ScalabilityStructure {
+    pub spatial_layers_cnt_minus_1: u8,
+    /// `(spatial_layer_max_width[i], spatial_layer_max_height[i])`,
+    /// present when `spatial_layer_dimensions_present_flag`.
+    pub spatial_layer_dimensions: Vec<(u16, u16)>,
+    /// `spatial_layer_ref_id[i]`, present when
+    /// `spatial_layer_description_present_flag`.
+    pub spatial_layer_ref_ids: Vec<u8>,
+    /// Present when `temporal_group_description_present_flag`.
+    pub temporal_groups: Vec<Av1TemporalGroupEntry>,
+}
+
+/// `metadata_timecode()` — §5.8.7.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Av1Timecode {
+    pub counting_type: u8,
+    pub full_timestamp_flag: bool,
+    pub discontinuity_flag: bool,
+    pub cnt_dropped_flag: bool,
+    /// f(9).
+    pub n_frames: u16,
+    pub seconds: Option<u8>,
+    pub minutes: Option<u8>,
+    pub hours: Option<u8>,
+    pub time_offset_length: u8,
+    pub time_offset_value: u32,
+}
+
+/// A decoded `metadata_obu()` (§5.8.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Av1Metadata {
+    HdrCll(Av1HdrCll),
+    HdrMdcv(Av1HdrMdcv),
+    Scalability {
+        scalability_mode_idc: u8,
+        /// `Some` only for [`SCALABILITY_SS`].
+        structure: Option<Av1ScalabilityStructure>,
+    },
+    ItutT35(Av1ItutT35),
+    Timecode(Av1Timecode),
+    /// Reserved / user-private `metadata_type` — surfaced raw per the
+    /// §5.8.1 note (decoders ignore unknown types; the payload is
+    /// truncated at the last non-zero byte).
+    Unknown {
+        metadata_type: u64,
+        payload: Vec<u8>,
+    },
+}
+
+/// Parse the payload of an `OBU_METADATA` (§5.8.1). `payload` is the
+/// OBU payload as delimited by [`read_obu`].
+pub fn parse_metadata_obu(payload: &[u8]) -> Result<Av1Metadata, BitstreamError> {
+    let (metadata_type, n) = read_leb128(payload, 0)?;
+    let body = &payload[n..];
+    match metadata_type {
+        METADATA_TYPE_HDR_CLL => {
+            let mut r = BitReader::new(body);
+            if body.len() < 4 {
+                return Err(BitstreamError::unexpected_end(
+                    "metadata_hdr_cll needs 4 payload bytes",
+                ));
+            }
+            Ok(Av1Metadata::HdrCll(Av1HdrCll {
+                max_cll: r.u(16) as u16,
+                max_fall: r.u(16) as u16,
+            }))
+        }
+        METADATA_TYPE_HDR_MDCV => {
+            if body.len() < 24 {
+                return Err(BitstreamError::unexpected_end(
+                    "metadata_hdr_mdcv needs 24 payload bytes",
+                ));
+            }
+            let mut r = BitReader::new(body);
+            let mut m = Av1HdrMdcv::default();
+            for p in &mut m.primary_chromaticity {
+                *p = (r.u(16) as u16, r.u(16) as u16);
+            }
+            m.white_point_chromaticity = (r.u(16) as u16, r.u(16) as u16);
+            m.luminance_max = r.u(32);
+            m.luminance_min = r.u(32);
+            Ok(Av1Metadata::HdrMdcv(m))
+        }
+        METADATA_TYPE_SCALABILITY => {
+            if body.is_empty() {
+                return Err(BitstreamError::unexpected_end(
+                    "metadata_scalability needs a mode byte",
+                ));
+            }
+            let mode = body[0];
+            let structure = if mode == SCALABILITY_SS {
+                let mut r = BitReader::new(&body[1..]);
+                let mut s = Av1ScalabilityStructure {
+                    spatial_layers_cnt_minus_1: r.u(2) as u8,
+                    ..Av1ScalabilityStructure::default()
+                };
+                let dims_present = r.u(1) != 0;
+                let desc_present = r.u(1) != 0;
+                let temporal_present = r.u(1) != 0;
+                let _reserved = r.u(3);
+                if dims_present {
+                    for _ in 0..=s.spatial_layers_cnt_minus_1 {
+                        s.spatial_layer_dimensions
+                            .push((r.u(16) as u16, r.u(16) as u16));
+                    }
+                }
+                if desc_present {
+                    for _ in 0..=s.spatial_layers_cnt_minus_1 {
+                        s.spatial_layer_ref_ids.push(r.u(8) as u8);
+                    }
+                }
+                if temporal_present {
+                    let temporal_group_size = r.u(8);
+                    for _ in 0..temporal_group_size {
+                        let mut e = Av1TemporalGroupEntry {
+                            temporal_id: r.u(3) as u8,
+                            temporal_switching_up_point_flag: r.u(1) != 0,
+                            spatial_switching_up_point_flag: r.u(1) != 0,
+                            ..Av1TemporalGroupEntry::default()
+                        };
+                        let ref_cnt = r.u(3);
+                        for _ in 0..ref_cnt {
+                            e.ref_pic_diffs.push(r.u(8) as u8);
+                        }
+                        s.temporal_groups.push(e);
+                    }
+                }
+                if r.bit_pos() > r.total_bits() {
+                    return Err(BitstreamError::unexpected_end(
+                        "scalability_structure truncated",
+                    ));
+                }
+                Some(s)
+            } else {
+                None
+            };
+            Ok(Av1Metadata::Scalability {
+                scalability_mode_idc: mode,
+                structure,
+            })
+        }
+        METADATA_TYPE_ITUT_T35 => {
+            if body.is_empty() {
+                return Err(BitstreamError::unexpected_end(
+                    "metadata_itut_t35 needs a country-code byte",
+                ));
+            }
+            let country_code = body[0];
+            let (ext, rest) = if country_code == 0xFF {
+                if body.len() < 2 {
+                    return Err(BitstreamError::unexpected_end(
+                        "metadata_itut_t35 missing country_code_extension_byte",
+                    ));
+                }
+                (Some(body[1]), &body[2..])
+            } else {
+                (None, &body[1..])
+            };
+            // §5.8.2 note: valid content ends at the last non-zero
+            // byte (trailing zeros are OBU padding).
+            let valid = rest.len() - rest.iter().rev().take_while(|&&b| b == 0).count();
+            Ok(Av1Metadata::ItutT35(Av1ItutT35 {
+                country_code,
+                country_code_extension: ext,
+                payload: rest[..valid].to_vec(),
+            }))
+        }
+        METADATA_TYPE_TIMECODE => {
+            let mut r = BitReader::new(body);
+            let mut t = Av1Timecode {
+                counting_type: r.u(5) as u8,
+                full_timestamp_flag: r.u(1) != 0,
+                discontinuity_flag: r.u(1) != 0,
+                cnt_dropped_flag: r.u(1) != 0,
+                n_frames: r.u(9) as u16,
+                ..Av1Timecode::default()
+            };
+            if t.full_timestamp_flag {
+                t.seconds = Some(r.u(6) as u8);
+                t.minutes = Some(r.u(6) as u8);
+                t.hours = Some(r.u(5) as u8);
+            } else if r.u(1) != 0 {
+                // seconds_flag
+                t.seconds = Some(r.u(6) as u8);
+                if r.u(1) != 0 {
+                    // minutes_flag
+                    t.minutes = Some(r.u(6) as u8);
+                    if r.u(1) != 0 {
+                        // hours_flag
+                        t.hours = Some(r.u(5) as u8);
+                    }
+                }
+            }
+            t.time_offset_length = r.u(5) as u8;
+            if t.time_offset_length > 0 {
+                t.time_offset_value = r.u(t.time_offset_length as u32);
+            }
+            if r.bit_pos() > r.total_bits() {
+                return Err(BitstreamError::unexpected_end(
+                    "metadata_timecode truncated",
+                ));
+            }
+            Ok(Av1Metadata::Timecode(t))
+        }
+        other => {
+            // §5.8.1 note: unknown types are ignored; valid content
+            // ends at the last non-zero byte.
+            let valid = body.len() - body.iter().rev().take_while(|&&b| b == 0).count();
+            Ok(Av1Metadata::Unknown {
+                metadata_type: other,
+                payload: body[..valid].to_vec(),
+            })
+        }
+    }
+}
+
+/// Emit a `metadata_obu()` payload (§5.8.1) — the inverse of
+/// [`parse_metadata_obu`]. The returned bytes are the OBU *payload*
+/// (leb128 `metadata_type` + type body + `trailing_bits()`); frame
+/// them with [`write_obu`] (`obu_type = OBU_METADATA`).
+pub fn write_metadata_obu(meta: &Av1Metadata) -> Result<Vec<u8>, BitstreamError> {
+    let mut out = Vec::new();
+    match meta {
+        Av1Metadata::HdrCll(c) => {
+            write_leb128(&mut out, METADATA_TYPE_HDR_CLL)?;
+            let mut w = crate::bit_writer::BitWriter::new();
+            w.write_bits(c.max_cll as u32, 16);
+            w.write_bits(c.max_fall as u32, 16);
+            w.write_rbsp_trailing_bits();
+            out.extend_from_slice(&w.finish());
+        }
+        Av1Metadata::HdrMdcv(m) => {
+            write_leb128(&mut out, METADATA_TYPE_HDR_MDCV)?;
+            let mut w = crate::bit_writer::BitWriter::new();
+            for &(x, y) in &m.primary_chromaticity {
+                w.write_bits(x as u32, 16);
+                w.write_bits(y as u32, 16);
+            }
+            w.write_bits(m.white_point_chromaticity.0 as u32, 16);
+            w.write_bits(m.white_point_chromaticity.1 as u32, 16);
+            w.write_bits(m.luminance_max, 32);
+            w.write_bits(m.luminance_min, 32);
+            w.write_rbsp_trailing_bits();
+            out.extend_from_slice(&w.finish());
+        }
+        Av1Metadata::Scalability {
+            scalability_mode_idc,
+            structure,
+        } => {
+            write_leb128(&mut out, METADATA_TYPE_SCALABILITY)?;
+            out.push(*scalability_mode_idc);
+            if *scalability_mode_idc == SCALABILITY_SS {
+                let s = structure.as_ref().ok_or_else(|| {
+                    BitstreamError::invalid(
+                        "SCALABILITY_SS requires a scalability_structure (§5.8.5)",
+                    )
+                })?;
+                let n_layers = s.spatial_layers_cnt_minus_1 as usize + 1;
+                if s.spatial_layers_cnt_minus_1 > 3 {
+                    return Err(BitstreamError::invalid(
+                        "spatial_layers_cnt_minus_1 exceeds the 2-bit field",
+                    ));
+                }
+                let dims = !s.spatial_layer_dimensions.is_empty();
+                let desc = !s.spatial_layer_ref_ids.is_empty();
+                if (dims && s.spatial_layer_dimensions.len() != n_layers)
+                    || (desc && s.spatial_layer_ref_ids.len() != n_layers)
+                {
+                    return Err(BitstreamError::invalid(
+                        "scalability_structure per-layer lists must have \
+                         spatial_layers_cnt_minus_1 + 1 entries (§5.8.6)",
+                    ));
+                }
+                let mut w = crate::bit_writer::BitWriter::new();
+                w.write_bits(s.spatial_layers_cnt_minus_1 as u32, 2);
+                w.write_bit(u32::from(dims));
+                w.write_bit(u32::from(desc));
+                w.write_bit(u32::from(!s.temporal_groups.is_empty()));
+                w.write_bits(0, 3); // reserved
+                for &(mw, mh) in &s.spatial_layer_dimensions {
+                    w.write_bits(mw as u32, 16);
+                    w.write_bits(mh as u32, 16);
+                }
+                for &id in &s.spatial_layer_ref_ids {
+                    w.write_bits(id as u32, 8);
+                }
+                if !s.temporal_groups.is_empty() {
+                    if s.temporal_groups.len() > 255 {
+                        return Err(BitstreamError::invalid(
+                            "temporal_group_size exceeds the 8-bit field",
+                        ));
+                    }
+                    w.write_bits(s.temporal_groups.len() as u32, 8);
+                    for e in &s.temporal_groups {
+                        if e.temporal_id > 7 || e.ref_pic_diffs.len() > 7 {
+                            return Err(BitstreamError::invalid(
+                                "temporal group entry exceeds its 3-bit fields",
+                            ));
+                        }
+                        w.write_bits(e.temporal_id as u32, 3);
+                        w.write_bit(u32::from(e.temporal_switching_up_point_flag));
+                        w.write_bit(u32::from(e.spatial_switching_up_point_flag));
+                        w.write_bits(e.ref_pic_diffs.len() as u32, 3);
+                        for &d in &e.ref_pic_diffs {
+                            w.write_bits(d as u32, 8);
+                        }
+                    }
+                }
+                w.write_rbsp_trailing_bits();
+                out.extend_from_slice(&w.finish());
+            } else {
+                out.push(0x80); // trailing_bits
+            }
+        }
+        Av1Metadata::ItutT35(t) => {
+            write_leb128(&mut out, METADATA_TYPE_ITUT_T35)?;
+            out.push(t.country_code);
+            if t.country_code == 0xFF {
+                out.push(t.country_code_extension.ok_or_else(|| {
+                    BitstreamError::invalid("country_code 0xFF requires an extension byte (§5.8.2)")
+                })?);
+            }
+            // §5.8.2 note: the trailing bit is part of the payload
+            // bytes for this type, and content is delimited by the
+            // last non-zero byte. A payload ending in 0x00 would be
+            // silently truncated by that rule, so refuse it rather
+            // than corrupt the round-trip.
+            if t.payload.last() == Some(&0) {
+                return Err(BitstreamError::invalid(
+                    "itu_t_t35 payload must not end in 0x00 (§5.8.2 trailing rule)",
+                ));
+            }
+            out.extend_from_slice(&t.payload);
+        }
+        Av1Metadata::Timecode(t) => {
+            write_leb128(&mut out, METADATA_TYPE_TIMECODE)?;
+            if t.n_frames > 0x1FF {
+                return Err(BitstreamError::invalid(
+                    "timecode n_frames exceeds the 9-bit field",
+                ));
+            }
+            if t.time_offset_length > 31 {
+                return Err(BitstreamError::invalid(
+                    "timecode time_offset_length exceeds the 5-bit field",
+                ));
+            }
+            let mut w = crate::bit_writer::BitWriter::new();
+            w.write_bits(t.counting_type as u32, 5);
+            w.write_bit(u32::from(t.full_timestamp_flag));
+            w.write_bit(u32::from(t.discontinuity_flag));
+            w.write_bit(u32::from(t.cnt_dropped_flag));
+            w.write_bits(t.n_frames as u32, 9);
+            if t.full_timestamp_flag {
+                let (Some(s), Some(m), Some(h)) = (t.seconds, t.minutes, t.hours) else {
+                    return Err(BitstreamError::invalid(
+                        "full_timestamp_flag requires seconds/minutes/hours (§5.8.7)",
+                    ));
+                };
+                w.write_bits(s as u32, 6);
+                w.write_bits(m as u32, 6);
+                w.write_bits(h as u32, 5);
+            } else {
+                w.write_bit(u32::from(t.seconds.is_some()));
+                if let Some(s) = t.seconds {
+                    w.write_bits(s as u32, 6);
+                    w.write_bit(u32::from(t.minutes.is_some()));
+                    if let Some(m) = t.minutes {
+                        w.write_bits(m as u32, 6);
+                        w.write_bit(u32::from(t.hours.is_some()));
+                        if let Some(h) = t.hours {
+                            w.write_bits(h as u32, 5);
+                        }
+                    }
+                } else if t.minutes.is_some() || t.hours.is_some() {
+                    return Err(BitstreamError::invalid(
+                        "timecode minutes/hours require seconds (§5.8.7 ladder)",
+                    ));
+                }
+            }
+            w.write_bits(t.time_offset_length as u32, 5);
+            if t.time_offset_length > 0 {
+                w.write_bits(t.time_offset_value, t.time_offset_length as u32);
+            }
+            w.write_rbsp_trailing_bits();
+            out.extend_from_slice(&w.finish());
+        }
+        Av1Metadata::Unknown {
+            metadata_type,
+            payload,
+        } => {
+            write_leb128(&mut out, *metadata_type)?;
+            // Same trailing rule as itu_t_t35 (§5.8.1 note).
+            if payload.last() == Some(&0) {
+                return Err(BitstreamError::invalid(
+                    "unknown-metadata payload must not end in 0x00 (§5.8.1 trailing rule)",
+                ));
+            }
+            out.extend_from_slice(payload);
+        }
+    }
+    Ok(out)
+}
+
 // ─────────────────────────── Sequence header ─────────────────────────────────
 
 /// 6.4.2 `color_config`. Reduced form — we keep only the fields the
@@ -919,6 +1378,213 @@ mod tests {
             assert_eq!(got, v, "round-trip value for {v}");
             assert_eq!(consumed, n, "round-trip byte count for {v}");
         }
+    }
+
+    #[test]
+    fn metadata_hdr_cll_roundtrips() {
+        let m = Av1Metadata::HdrCll(Av1HdrCll {
+            max_cll: 1000,
+            max_fall: 400,
+        });
+        let payload = write_metadata_obu(&m).unwrap();
+        // leb128 type (1 byte) + 4 bytes + trailing byte.
+        assert_eq!(payload.len(), 6);
+        assert_eq!(payload[0], 0x01);
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), m);
+    }
+
+    #[test]
+    fn metadata_hdr_mdcv_roundtrips() {
+        let m = Av1Metadata::HdrMdcv(Av1HdrMdcv {
+            primary_chromaticity: [(0x8000, 0x1000), (0x2000, 0xC000), (0x0800, 0x0400)],
+            white_point_chromaticity: (0x5000, 0x5400),
+            luminance_max: 1000 << 8,    // 24.8 fixed point
+            luminance_min: 5 << 14 >> 4, // 18.14 fixed point (0.005-ish)
+        });
+        let payload = write_metadata_obu(&m).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), m);
+    }
+
+    #[test]
+    fn metadata_itut_t35_roundtrips_and_strips_padding() {
+        let m = Av1Metadata::ItutT35(Av1ItutT35 {
+            country_code: 0xB5,
+            country_code_extension: None,
+            payload: vec![0x00, 0x31, 0x47, 0x41, 0x39, 0x34, 0x80],
+        });
+        let payload = write_metadata_obu(&m).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), m);
+
+        // Trailing zero padding after the content is stripped on parse.
+        let mut padded = payload.clone();
+        padded.extend_from_slice(&[0, 0, 0]);
+        assert_eq!(parse_metadata_obu(&padded).unwrap(), m);
+
+        // Extended country code.
+        let m = Av1Metadata::ItutT35(Av1ItutT35 {
+            country_code: 0xFF,
+            country_code_extension: Some(0x01),
+            payload: vec![0xAA],
+        });
+        let payload = write_metadata_obu(&m).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), m);
+    }
+
+    #[test]
+    fn metadata_itut_t35_writer_rejects_zero_tail() {
+        let m = Av1Metadata::ItutT35(Av1ItutT35 {
+            country_code: 0xB5,
+            country_code_extension: None,
+            payload: vec![0x01, 0x00],
+        });
+        assert!(matches!(
+            write_metadata_obu(&m).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+    }
+
+    #[test]
+    fn metadata_scalability_ss_roundtrips() {
+        let m = Av1Metadata::Scalability {
+            scalability_mode_idc: SCALABILITY_SS,
+            structure: Some(Av1ScalabilityStructure {
+                spatial_layers_cnt_minus_1: 1,
+                spatial_layer_dimensions: vec![(640, 360), (1280, 720)],
+                spatial_layer_ref_ids: vec![0, 1],
+                temporal_groups: vec![
+                    Av1TemporalGroupEntry {
+                        temporal_id: 0,
+                        temporal_switching_up_point_flag: false,
+                        spatial_switching_up_point_flag: true,
+                        ref_pic_diffs: vec![4],
+                    },
+                    Av1TemporalGroupEntry {
+                        temporal_id: 1,
+                        temporal_switching_up_point_flag: true,
+                        spatial_switching_up_point_flag: false,
+                        ref_pic_diffs: vec![1, 2],
+                    },
+                ],
+            }),
+        };
+        let payload = write_metadata_obu(&m).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), m);
+    }
+
+    #[test]
+    fn metadata_scalability_simple_mode_roundtrips() {
+        // Non-SS mode carries no structure.
+        let m = Av1Metadata::Scalability {
+            scalability_mode_idc: 0, // SCALABILITY_L1T2
+            structure: None,
+        };
+        let payload = write_metadata_obu(&m).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), m);
+    }
+
+    #[test]
+    fn metadata_timecode_full_and_partial_roundtrip() {
+        let full = Av1Metadata::Timecode(Av1Timecode {
+            counting_type: 0,
+            full_timestamp_flag: true,
+            discontinuity_flag: false,
+            cnt_dropped_flag: true,
+            n_frames: 500,
+            seconds: Some(59),
+            minutes: Some(58),
+            hours: Some(23),
+            time_offset_length: 20,
+            time_offset_value: 0xABCDE,
+        });
+        let payload = write_metadata_obu(&full).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), full);
+
+        let partial = Av1Metadata::Timecode(Av1Timecode {
+            counting_type: 4,
+            full_timestamp_flag: false,
+            n_frames: 0,
+            seconds: Some(30),
+            minutes: None,
+            hours: None,
+            time_offset_length: 0,
+            ..Av1Timecode::default()
+        });
+        let payload = write_metadata_obu(&partial).unwrap();
+        assert_eq!(parse_metadata_obu(&payload).unwrap(), partial);
+    }
+
+    #[test]
+    fn metadata_unknown_type_surfaced_raw() {
+        // Type 6 is user-private (§6.7.1).
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, 6).unwrap();
+        payload.extend_from_slice(&[0xDE, 0xAD, 0x00, 0x00]);
+        let Av1Metadata::Unknown {
+            metadata_type,
+            payload: body,
+        } = parse_metadata_obu(&payload).unwrap()
+        else {
+            panic!("expected Unknown");
+        };
+        assert_eq!(metadata_type, 6);
+        assert_eq!(body, [0xDE, 0xAD], "trailing zeros stripped");
+    }
+
+    #[test]
+    fn metadata_rejects_truncated_bodies() {
+        for (t, len) in [
+            (METADATA_TYPE_HDR_CLL, 3usize),
+            (METADATA_TYPE_HDR_MDCV, 23),
+        ] {
+            let mut payload = Vec::new();
+            write_leb128(&mut payload, t).unwrap();
+            payload.extend_from_slice(&vec![0u8; len]);
+            assert!(
+                matches!(
+                    parse_metadata_obu(&payload).unwrap_err(),
+                    BitstreamError::UnexpectedEnd(_)
+                ),
+                "type {t} with {len} bytes"
+            );
+        }
+        // Empty scalability / t35 bodies.
+        for t in [METADATA_TYPE_SCALABILITY, METADATA_TYPE_ITUT_T35] {
+            let mut payload = Vec::new();
+            write_leb128(&mut payload, t).unwrap();
+            assert!(matches!(
+                parse_metadata_obu(&payload).unwrap_err(),
+                BitstreamError::UnexpectedEnd(_)
+            ));
+        }
+        // Empty buffer: leb128 type itself truncated.
+        assert!(matches!(
+            parse_metadata_obu(&[]).unwrap_err(),
+            BitstreamError::UnexpectedEnd(_)
+        ));
+    }
+
+    #[test]
+    fn metadata_obu_frames_through_write_obu() {
+        // End-to-end: frame an HDR CLL metadata payload as a full OBU
+        // and read it back through the OBU walker.
+        let m = Av1Metadata::HdrCll(Av1HdrCll {
+            max_cll: 4000,
+            max_fall: 1000,
+        });
+        let payload = write_metadata_obu(&m).unwrap();
+        let header = ObuHeader {
+            obu_type: OBU_METADATA,
+            extension_flag: false,
+            has_size_field: true,
+            temporal_id: 0,
+            spatial_id: 0,
+        };
+        let mut stream = Vec::new();
+        let (start, end) = write_obu(&mut stream, header, &payload).unwrap();
+        let (h, ps, pe, next) = read_obu(&stream, start).unwrap();
+        assert_eq!(h.obu_type, OBU_METADATA);
+        assert_eq!(next, end);
+        assert_eq!(parse_metadata_obu(&stream[ps..pe]).unwrap(), m);
     }
 
     #[test]

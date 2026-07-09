@@ -67,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (§E.3.2), `chroma_qp_offset_list_len_minus1 ≤ 5` (§7.4.3.3.2),
   tile column/row counts checked against remaining payload bits.
 
+- av1: metadata OBU family (§5.8) — `parse_metadata_obu` /
+  `write_metadata_obu` covering HDR CLL (§5.8.3), HDR MDCV (§5.8.4),
+  scalability incl. the full `scalability_structure()` (§5.8.5/§5.8.6,
+  SCALABILITY_SS), ITU-T T.35 (§5.8.2 with the last-non-zero-byte
+  trailing rule enforced both ways) and timecode (§5.8.7 ladder);
+  reserved/user-private types surfaced raw per the §5.8.1 note. All
+  five families round-trip through the writer, including end-to-end
+  framing through `write_obu`/`read_obu`.
+
 ### Fixed
 
 - H.264 / HEVC SPS parsers now reject an out-of-range
