@@ -29,6 +29,8 @@
 use crate::bit_reader::BitReader;
 use crate::BitstreamError;
 
+pub mod sei;
+
 // ─────────────────────────── NAL unit types ──────────────────────────────────
 
 /// 7.4.2.2 — IDR_W_RADL slice.
@@ -1141,8 +1143,22 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
     sps.sps_max_num_reorder_pics = last_max_reorder;
     sps.sps_max_latency_increase_plus1 = last_max_latency;
 
-    sps.log2_min_luma_coding_block_size_minus3 = r.ue()? as u8;
-    sps.log2_diff_max_min_luma_coding_block_size = r.ue()? as u8;
+    // Profile conformance (§A.3) requires the derived CtbLog2SizeY
+    // (7-10/7-11: log2_min_luma_coding_block_size_minus3 + 3 +
+    // log2_diff_max_min_luma_coding_block_size) to be 4..=6. A hostile
+    // SPS outside that range would silently truncate through the u8
+    // fields and later drive an overflowing `1 << CtbLog2SizeY` in the
+    // slice-segment-address width computation, so reject it here.
+    let log2_min_cb_minus3 = r.ue()?;
+    let log2_diff_cb = r.ue()?;
+    let ctb_log2 = log2_min_cb_minus3 as u64 + 3 + log2_diff_cb as u64;
+    if !(4..=6).contains(&ctb_log2) {
+        return Err(BitstreamError::invalid(format!(
+            "SPS CtbLog2SizeY={ctb_log2} (must be 4..=6, §A.3 profile conformance)"
+        )));
+    }
+    sps.log2_min_luma_coding_block_size_minus3 = log2_min_cb_minus3 as u8;
+    sps.log2_diff_max_min_luma_coding_block_size = log2_diff_cb as u8;
     sps.log2_min_luma_transform_block_size_minus2 = r.ue()? as u8;
     sps.log2_diff_max_min_luma_transform_block_size = r.ue()? as u8;
     sps.max_transform_hierarchy_depth_inter = r.ue()? as u8;
@@ -1403,15 +1419,23 @@ pub fn parse_slice_header_minimal(
     }
     if !sh.first_slice_segment_in_pic_flag {
         // slice_segment_address — ceil(log2(num CTBs)) bits. We don't
-        // need it for the HW IDR submit; just consume.
-        let ctb_log2 = sps.log2_min_luma_coding_block_size_minus3 as u32
-            + 3
-            + sps.log2_diff_max_min_luma_coding_block_size as u32;
+        // need it for the HW IDR submit; just consume. The SPS parser
+        // guarantees CtbLog2SizeY ∈ 4..=6 (§A.3), but this function
+        // also accepts a caller-constructed `HevcSps`, so bound the
+        // shift defensively rather than trusting the struct.
+        let ctb_log2 = (sps.log2_min_luma_coding_block_size_minus3 as u32)
+            .saturating_add(3)
+            .saturating_add(sps.log2_diff_max_min_luma_coding_block_size as u32);
+        if ctb_log2 > 6 {
+            return Err(BitstreamError::invalid(format!(
+                "slice header with CtbLog2SizeY={ctb_log2} (must be 4..=6, §A.3)"
+            )));
+        }
         let ctb_size = 1u32 << ctb_log2;
         let pic_w_in_ctbs = sps.pic_width_in_luma_samples.div_ceil(ctb_size);
         let pic_h_in_ctbs = sps.pic_height_in_luma_samples.div_ceil(ctb_size);
         let total_ctbs = pic_w_in_ctbs as u64 * pic_h_in_ctbs as u64;
-        let bits = 64 - total_ctbs.leading_zeros();
+        let bits = (64 - total_ctbs.leading_zeros()).min(32);
         let _slice_segment_address = r.u(bits);
     }
 
@@ -1919,6 +1943,78 @@ mod tests {
         w.write_ue(65).unwrap();
         let err = parse_sps_nal(&sps_nal_from(w)).unwrap_err();
         assert!(matches!(err, BitstreamError::InvalidData(_)));
+    }
+
+    #[test]
+    fn sps_rejects_out_of_range_ctb_log2() {
+        // Fuzz regression: a hostile SPS declaring huge coding-block
+        // log2 fields drove `1u32 << CtbLog2SizeY` past 31 in the
+        // slice-segment-address width computation. §A.3 profile
+        // conformance pins CtbLog2SizeY to 4..=6; both parse paths
+        // must reject anything else.
+        let mut w = crate::bit_writer::BitWriter::new();
+        write_sps_prefix_custom(&mut w, 60, 60); // ctb_log2 = 123
+        let err = parse_sps_nal(&sps_nal_from(w)).unwrap_err();
+        assert!(matches!(err, BitstreamError::InvalidData(_)), "{err:?}");
+
+        // CtbLog2SizeY = 3 (too small) is also rejected.
+        let mut w = crate::bit_writer::BitWriter::new();
+        write_sps_prefix_custom(&mut w, 0, 0); // 0 + 3 + 0 = 3
+        let err = parse_sps_nal(&sps_nal_from(w)).unwrap_err();
+        assert!(matches!(err, BitstreamError::InvalidData(_)), "{err:?}");
+    }
+
+    #[test]
+    fn slice_header_rejects_hand_built_bad_ctb_log2() {
+        // The slice parser must not trust a caller-constructed SPS.
+        let sps = HevcSps {
+            log2_min_luma_coding_block_size_minus3: 255,
+            log2_diff_max_min_luma_coding_block_size: 255,
+            pic_width_in_luma_samples: 320,
+            pic_height_in_luma_samples: 240,
+            ..HevcSps::default()
+        };
+        let pps = HevcPps::default();
+        // first_slice_segment_in_pic_flag = 0 forces the
+        // slice_segment_address branch.
+        let nal = [0x02u8, 0x01, 0x00, 0x80];
+        let err = parse_slice_header_minimal(&nal, &sps, &pps).unwrap_err();
+        assert!(matches!(err, BitstreamError::InvalidData(_)), "{err:?}");
+    }
+
+    /// Like [`write_sps_prefix`] but with custom coding-block log2
+    /// fields (used by the CtbLog2SizeY range tests).
+    fn write_sps_prefix_custom(
+        w: &mut crate::bit_writer::BitWriter,
+        log2_min: u32,
+        log2_diff: u32,
+    ) {
+        w.write_bits(0, 4);
+        w.write_bits(0, 3);
+        w.write_bit(1);
+        w.write_bits(0, 2);
+        w.write_bit(0);
+        w.write_bits(1, 5);
+        w.write_bits(0x6000_0000, 32);
+        w.write_bits(0, 4);
+        w.write_bits(0, 32);
+        w.write_bits(0, 11);
+        w.write_bit(0);
+        w.write_bits(63, 8);
+        w.write_ue(0).unwrap();
+        w.write_ue(1).unwrap();
+        w.write_ue(320).unwrap();
+        w.write_ue(240).unwrap();
+        w.write_bit(0);
+        w.write_ue(0).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_ue(4).unwrap();
+        w.write_bit(1);
+        w.write_ue(4).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_ue(log2_min).unwrap();
+        w.write_ue(log2_diff).unwrap();
     }
 
     #[test]
