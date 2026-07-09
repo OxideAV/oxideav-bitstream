@@ -126,3 +126,25 @@ fn hevc_individual_parsers_succeed() {
     assert_eq!(sps.pic_height_in_luma_samples, 240);
     assert_eq!(pps.pps_seq_parameter_set_id, sps.sps_seq_parameter_set_id);
 }
+
+#[test]
+fn fixture_vui_timing_and_sar_parse() {
+    let parsed = oxideav_bitstream::hevc::parse_idr_only(HEVC_MAIN).expect("fixture parses");
+    let vui = parsed.sps.vui.as_ref().expect("fixture SPS has VUI");
+    // Square samples (Table E.1 idc 1), video_format 5 (unspecified),
+    // 1/1 timing (single-frame encode at 1 picture/s).
+    assert_eq!(vui.aspect_ratio_idc, 1);
+    assert_eq!(vui.sample_aspect_ratio(), Some((1, 1)));
+    assert!(vui.video_signal_type_present_flag);
+    assert_eq!(vui.video_format, 5);
+    assert!(vui.vui_timing_info_present_flag);
+    assert_eq!(vui.picture_rate(), Some((1, 1)));
+    assert!(vui.hrd_parameters.is_none());
+    // No optional coding-tool blocks on this Main-profile encode.
+    assert!(parsed.sps.scaling_list_data.is_none());
+    assert!(!parsed.sps.pcm_enabled_flag);
+    assert!(parsed.sps.short_term_rps.is_empty());
+    assert!(parsed.sps.long_term_ref_pics.is_empty());
+    assert!(parsed.sps.range_extension.is_none());
+    assert!(parsed.pps.tiles.is_none());
+}

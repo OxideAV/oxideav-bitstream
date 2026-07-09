@@ -47,6 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PPS records `high_profile_tail_present` so the optional §7.3.2.2
   tail round-trips bit-for-bit.
 
+- hevc: SPS/PPS walk driven to the extension flags — every former
+  `Unsupported` refusal except SCC/multilayer/3D payloads now parses:
+  scaling_list_data (§7.3.4 with §7.4.5 range checks), PCM block,
+  short-term RPS with the full §7.4.8 inter-set-prediction derivation
+  (7-59..7-71) resolved to `DeltaPocS0/S1` form, long-term RPS,
+  VUI/HRD (§E.2.1/§E.2.2/§E.2.3 incl. sub-pic HRD fields and
+  per-sub-layer CPB schedules), SPS/PPS range extensions
+  (§7.3.2.2.2/§7.3.2.3.2), PPS tile grid + WPP. New types
+  `HevcScalingListData`, `HevcShortTermRps`, `HevcVui`,
+  `HevcHrdParameters`, `HevcCpbEntry`, `HevcTiles`,
+  `Hevc{Sps,Pps}RangeExtension`, `HevcDefaultDisplayWindow`; helpers
+  `sample_aspect_ratio()` (Table E.1), `picture_rate()` (§E.3.1),
+  `num_negative_pics()`/`num_positive_pics()`/`num_delta_pocs()`
+  (7-63/7-64/7-71).
+- hevc: hostile-input bounds — `sps_max_dec_pic_buffering_minus1 ≤ 15`
+  (§A.4.2 MaxDpbSize cap), `num_short_term_ref_pic_sets ≤ 64`,
+  `num_long_term_ref_pics_sps ≤ 32` (§7.4.3.2.1), `cpb_cnt_minus1 ≤ 31`
+  (§E.3.2), `chroma_qp_offset_list_len_minus1 ≤ 5` (§7.4.3.3.2),
+  tile column/row counts checked against remaining payload bits.
+
 ### Fixed
 
 - H.264 / HEVC SPS parsers now reject an out-of-range
