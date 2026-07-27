@@ -49,6 +49,7 @@ use crate::bit_reader::BitReader;
 use crate::BitstreamError;
 
 pub mod aps;
+pub mod sei;
 
 // ─────────────────────────── NAL unit types (Table 5) ───────────────────────
 

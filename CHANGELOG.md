@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- h266: SEI family — new `h266::sei` module with the §7.3.2.9 /
+  §7.3.6 `sei_rbsp()`/`sei_message()` framing (0xFF run-length
+  accumulation, declared-size validation, byte-exact framing writers)
+  plus typed decode **and** byte-exact encode for every payload whose
+  syntax lives in H.266 Annex D: buffering_period (§D.3,
+  self-contained length fields), pic_timing (§D.4) and
+  decoding_unit_info (§D.5) against a `VvcBufferingPeriod` +
+  `TemporalId` context (alt-CPB timing, decoding-unit blocks and the
+  §D.4.2/§D.5.2 inferences included), scalable_nesting (§D.6, nested
+  messages surfaced raw), subpic_level_info (§D.7), sei_manifest
+  (§D.8), sei_prefix_indication (§D.9) and the empty
+  constrained_rasl_encoding_indication (§D.10). Payload-alignment
+  bits are verified; H.274-delegated payload types surface raw via
+  `VvcSei::Unknown` per §D.2.2.
 - h266: adaptation parameter set family — new `h266::aps` module with
   the complete §7.3.2.6 `adaptation_parameter_set_rbsp()` walk and
   all three payload families: ALF (§7.3.2.18 — luma/chroma
