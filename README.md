@@ -155,17 +155,21 @@ input.
   `le` / skips / peeks) plus the AV1 LEB128 / OBU walkers and the IVF
   demuxer, and fuzzes the writer→reader round-trip invariant.
 - `parsers` — drives the per-codec header parsers (H.264 incl. SEI,
-  HEVC, H.266, MPEG-2, VC-1, VP8, VP9, AV1 metadata, framing
-  converters) at multiple input-derived byte offsets, feeds the
-  context-dependent slice / picture / SEI / entry-point parsers an
-  SPS / PPS / sequence-header context recovered from a prefix of the
-  same input, and asserts the parse→write→parse fixed points (H.264
-  SPS/PPS/SEI, AV1 metadata, length-prefixed framing) on every
-  successful parse. It found a panic where a malformed H.264 / HEVC
-  SPS with an out-of-range `log2_max_frame_num_minus4` /
-  `log2_max_pic_order_cnt_lsb_minus4` drove a `>32`-bit `BitReader::u`
-  read in the slice-header parser; the SPS parsers now reject those
-  values per H.264 §7.4.2.1.1 / H.265 §7.4.3.2.1.
+  HEVC, H.266 incl. APS + SEI, MPEG-2, VC-1, VP8, VP9, AV1 metadata,
+  framing converters) at multiple input-derived byte offsets, feeds
+  the context-dependent slice / picture / SEI / entry-point parsers an
+  SPS / PPS / sequence-header / buffering-period context recovered
+  from a prefix of the same input, and asserts the parse→write→parse
+  fixed points (H.264 SPS/PPS/SEI, HEVC VPS/SPS/PPS, H.266 APS +
+  every typed Annex-D SEI payload as a decode→encode *byte* fixed
+  point, AV1 metadata, length-prefixed framing) on every successful
+  parse. Findings fixed in-tree: an out-of-range
+  `log2_max_frame_num_minus4` / `log2_max_pic_order_cnt_lsb_minus4`
+  driving a `>32`-bit `BitReader::u` read in the H.264/HEVC
+  slice-header parsers (rejected per H.264 §7.4.2.1.1 / H.265
+  §7.4.3.2.1), and two truncation soundness holes in the H.266 typed
+  SEI decoders (zero-fill past-the-end and `ue(v)`-at-end phantom
+  reads) caught by the byte fixed points.
 
 ## No `unsafe`
 

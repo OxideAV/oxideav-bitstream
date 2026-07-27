@@ -70,6 +70,9 @@ fuzz_target!(|data: &[u8]| {
     // succeeds, the writer must accept the parsed struct and the
     // re-parse must reproduce it exactly.
     drive_h264_writer_roundtrips(data);
+    drive_hevc_writer_roundtrips(data);
+    drive_h266_aps_roundtrips(data);
+    drive_h266_sei_roundtrips(data);
     drive_av1_metadata_roundtrip(data);
     drive_framing_roundtrips(data);
 });
@@ -152,6 +155,16 @@ fn drive_single_arg_parsers(slice: &[u8]) {
     let _ = h266::parse_pps(slice);
     let _ = h266::parse_picture_header(slice);
     let _ = h266::parse_aud(slice);
+    // H.266 APS (NAL-level and RBSP-level) + SEI framing / typed
+    // decoders (context-free families).
+    let _ = h266::aps::parse_aps(slice);
+    let _ = h266::aps::parse_aps_rbsp(slice);
+    if let Ok(msgs) = h266::sei::parse_sei_rbsp(slice) {
+        for m in &msgs {
+            let _ = h266::sei::decode_sei_message(m);
+        }
+    }
+    let _ = h266::sei::parse_sei_nal(slice);
 
     // MPEG-2 start-code-payload parsers.
     let _ = mpeg2::parse_sequence_header(slice);
@@ -262,6 +275,148 @@ fn drive_h264_writer_roundtrips(data: &[u8]) {
             let re = h264::sei::parse_sei_rbsp(&rbsp).expect("written SEI re-parses");
             assert_eq!(re, msgs, "SEI framing fixed point");
         }
+    }
+}
+
+/// HEVC parse→write→parse fixed points for the parameter-set
+/// writers. A successful parse means the writer either reproduces
+/// the struct exactly through a re-parse, or refuses with
+/// `Unsupported` for the explicitly unrepresentable envelopes
+/// (`vps_extension_flag == 1`, non-zero `*_extension_4bits`) — a
+/// structural `InvalidData` on parser output is a bug.
+fn drive_hevc_writer_roundtrips(data: &[u8]) {
+    use oxideav_bitstream::BitstreamError;
+    if let Ok(vps) = hevc::parse_vps_nal(data) {
+        match hevc::write_vps_nal(&vps) {
+            Ok(nal) => {
+                let re = hevc::parse_vps_nal(&nal).expect("written HEVC VPS re-parses");
+                assert_eq!(re, vps, "HEVC VPS parse→write→parse fixed point");
+            }
+            Err(BitstreamError::Unsupported(_)) => assert!(
+                vps.vps_extension_flag,
+                "HEVC VPS writer refused a representable parsed VPS"
+            ),
+            Err(e) => panic!("HEVC VPS writer rejected parser output: {e:?}"),
+        }
+    }
+    if let Ok(sps) = hevc::parse_sps_nal(data) {
+        match hevc::write_sps_nal(&sps) {
+            Ok(nal) => {
+                let re = hevc::parse_sps_nal(&nal).expect("written HEVC SPS re-parses");
+                assert_eq!(re, sps, "HEVC SPS parse→write→parse fixed point");
+            }
+            Err(BitstreamError::Unsupported(_)) => assert!(
+                sps.sps_extension_4bits != 0,
+                "HEVC SPS writer refused a representable parsed SPS"
+            ),
+            Err(e) => panic!("HEVC SPS writer rejected parser output: {e:?}"),
+        }
+    }
+    if let Ok(pps) = hevc::parse_pps_nal(data) {
+        match hevc::write_pps_nal(&pps) {
+            Ok(nal) => {
+                let re = hevc::parse_pps_nal(&nal).expect("written HEVC PPS re-parses");
+                assert_eq!(re, pps, "HEVC PPS parse→write→parse fixed point");
+            }
+            Err(BitstreamError::Unsupported(_)) => assert!(
+                pps.pps_extension_4bits != 0,
+                "HEVC PPS writer refused a representable parsed PPS"
+            ),
+            Err(e) => panic!("HEVC PPS writer rejected parser output: {e:?}"),
+        }
+    }
+}
+
+/// H.266 APS parse→write→parse fixed point (RBSP level).
+fn drive_h266_aps_roundtrips(data: &[u8]) {
+    use oxideav_bitstream::BitstreamError;
+    if let Ok(aps) = h266::aps::parse_aps_rbsp(data) {
+        match h266::aps::write_aps(&aps) {
+            Ok(rbsp) => {
+                let re = h266::aps::parse_aps_rbsp(&rbsp).expect("written H.266 APS re-parses");
+                assert_eq!(re, aps, "H.266 APS parse→write→parse fixed point");
+            }
+            Err(BitstreamError::Unsupported(_)) => assert!(
+                aps.aps_extension_flag,
+                "H.266 APS writer refused a representable parsed APS"
+            ),
+            Err(e) => panic!("H.266 APS writer rejected parser output: {e:?}"),
+        }
+    }
+}
+
+/// H.266 SEI fixed points: framing, the context-free typed
+/// decode→encode inverses, and the BP-context PT/DUI pair driven from
+/// a split input.
+fn drive_h266_sei_roundtrips(data: &[u8]) {
+    use oxideav_bitstream::h266::sei as vsei;
+    if let Ok(msgs) = vsei::parse_sei_rbsp(data) {
+        let rbsp = vsei::write_sei_rbsp(&msgs).expect("H.266 SEI framing writer accepts messages");
+        let re = vsei::parse_sei_rbsp(&rbsp).expect("written H.266 SEI re-parses");
+        assert_eq!(re, msgs, "H.266 SEI framing fixed point");
+        for m in &msgs {
+            match vsei::decode_sei_message(m) {
+                Ok(vsei::VvcSei::BufferingPeriod(bp)) => {
+                    let enc = vsei::encode_buffering_period(&bp)
+                        .expect("encoder accepts every decoded BP");
+                    assert_eq!(enc.payload, m.payload, "BP decode→encode byte fixed point");
+                }
+                Ok(vsei::VvcSei::ScalableNesting(sn)) => {
+                    let enc = vsei::encode_scalable_nesting(&sn)
+                        .expect("encoder accepts every decoded nesting");
+                    assert_eq!(enc.payload, m.payload, "nesting byte fixed point");
+                }
+                Ok(vsei::VvcSei::SubpicLevelInfo(sli)) => {
+                    let enc = vsei::encode_subpic_level_info(&sli)
+                        .expect("encoder accepts every decoded SLI");
+                    assert_eq!(enc.payload, m.payload, "SLI byte fixed point");
+                }
+                Ok(vsei::VvcSei::SeiManifest(man)) => {
+                    let enc =
+                        vsei::encode_sei_manifest(&man).expect("encoder accepts decoded manifest");
+                    assert_eq!(enc.payload, m.payload, "manifest byte fixed point");
+                }
+                Ok(vsei::VvcSei::SeiPrefixIndication(p)) => {
+                    let enc = vsei::encode_sei_prefix_indication(&p)
+                        .expect("encoder accepts decoded prefix indication");
+                    assert_eq!(enc.payload, m.payload, "prefix-indication byte fixed point");
+                }
+                _ => {}
+            }
+        }
+    }
+    // BP-context PT / DUI: recover a buffering period from the head,
+    // then decode/encode the tail as pic_timing and decoding_unit_info.
+    if data.len() < 4 {
+        return;
+    }
+    let split = 1 + (data[0] as usize % data.len().max(1)).min(data.len() - 1);
+    let (head, tail) = data.split_at(split.min(data.len()));
+    let temporal_id = data[1] & 0x07;
+    let bp_msg = vsei::SeiMessage {
+        payload_type: vsei::SEI_TYPE_BUFFERING_PERIOD,
+        payload: head.to_vec(),
+    };
+    let Ok(bp) = vsei::decode_buffering_period(&bp_msg) else {
+        return;
+    };
+    let pt_msg = vsei::SeiMessage {
+        payload_type: vsei::SEI_TYPE_PIC_TIMING,
+        payload: tail.to_vec(),
+    };
+    if let Ok(pt) = vsei::decode_pic_timing(&pt_msg, &bp, temporal_id) {
+        let enc = vsei::encode_pic_timing(&pt, &bp, temporal_id)
+            .expect("encoder accepts every decoded PT");
+        assert_eq!(enc.payload, pt_msg.payload, "PT byte fixed point");
+    }
+    let dui_msg = vsei::SeiMessage {
+        payload_type: vsei::SEI_TYPE_DECODING_UNIT_INFO,
+        payload: tail.to_vec(),
+    };
+    if let Ok(dui) = vsei::decode_decoding_unit_info(&dui_msg, &bp, temporal_id) {
+        let enc = vsei::encode_decoding_unit_info(&dui, &bp, temporal_id)
+            .expect("encoder accepts every decoded DUI");
+        assert_eq!(enc.payload, dui_msg.payload, "DUI byte fixed point");
     }
 }
 

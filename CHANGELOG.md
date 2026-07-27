@@ -64,7 +64,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - hevc: the per-sub-layer DPB cap (`max_dec_pic_buffering_minus1 ≤ 15`,
   §A.4.2) is now enforced on **every** coded VPS/SPS ordering-info
-  entry, not just the highest sub-layer's.
+  entry, not just the highest sub-layer's; `vps_max_sub_layers_minus1`
+  / `sps_max_sub_layers_minus1` now reject the reserved value 7
+  (§7.4.3.1 / §7.4.3.2.1 pin the range to 0..=6).
+- fuzz: `parsers` target now asserts the HEVC VPS/SPS/PPS
+  parse→write→parse fixed points (writer refusals restricted to the
+  documented `Unsupported` envelopes), the H.266 APS fixed point, the
+  H.266 SEI framing fixed point, decode→encode **byte** fixed points
+  for every typed Annex-D payload, and the BP-context PT/DUI pair
+  from a split input.
+
+### Fixed
+- h266/sei: two fuzz-found truncation soundness holes in the typed SEI
+  decoders — (1) a payload shorter than its syntax decoded as zeros
+  via the shared reader's zero-fill-past-the-end contract (e.g. an
+  empty `sei_manifest` "decoded" as a zero-entry manifest); the
+  payload-alignment check now rejects any over-read; (2) `ue(v)`
+  invoked exactly at the end of a payload returned 0 without
+  consuming anything, letting truncated `pic_timing` /
+  `decoding_unit_info` / nesting payloads decode as if a real zero
+  had been coded; all Annex-D `ue(v)` reads now fail hard at
+  end-of-payload. Both breaks were caught by the new decode→encode
+  byte fixed points and carry regression tests.
 - h264: complete SPS parse — scaling lists (§7.3.2.1.1.1 `scaling_list()`
   with `UseDefaultScalingMatrixFlag` and freeze-after-zero semantics) and
   full VUI/HRD (Annex E §E.1.1/§E.1.2: aspect ratio incl. Extended_SAR,

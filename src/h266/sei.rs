@@ -176,6 +176,15 @@ pub fn write_sei_rbsp(messages: &[SeiMessage]) -> Result<Vec<u8>, BitstreamError
 /// payload-extension data is rejected (its length is unrecoverable
 /// without the future specification that defines it).
 fn read_payload_alignment(r: &mut BitReader<'_>) -> Result<(), BitstreamError> {
+    // The shared BitReader zero-fills past-the-end reads; a payload
+    // shorter than its syntax must be rejected here, not silently
+    // decoded as zeros (fuzz-found via the sei_manifest
+    // decode→encode byte fixed point on an empty payload).
+    if r.bit_pos() > r.total_bits() {
+        return Err(BitstreamError::unexpected_end(
+            "sei_payload shorter than its syntax structure",
+        ));
+    }
     if !r.byte_aligned() {
         if r.read_bit() != 1 {
             return Err(BitstreamError::invalid(
@@ -197,6 +206,21 @@ fn read_payload_alignment(r: &mut BitReader<'_>) -> Result<(), BitstreamError> {
         ));
     }
     Ok(())
+}
+
+/// `ue(v)` with an end-of-payload guard. The shared reader's `ue`
+/// returns `Ok(0)` without consuming anything when invoked exactly at
+/// the end of the buffer, which would let a truncated payload decode
+/// as if a real zero had been coded — and the re-encode would then
+/// emit one bit more than was parsed (fuzz-found via the DUI
+/// decode→encode byte fixed point on an empty tail).
+fn ue_strict(r: &mut BitReader<'_>) -> Result<u32, BitstreamError> {
+    if r.at_end() {
+        return Err(BitstreamError::unexpected_end(
+            "ue(v) at end of sei_payload",
+        ));
+    }
+    r.ue()
 }
 
 /// Close an encoded `sei_payload()`: append the §D.2.1 alignment
@@ -326,7 +350,7 @@ pub fn decode_buffering_period(msg: &SeiMessage) -> Result<VvcBufferingPeriod, B
         bp.bp_cpb_removal_delay_deltas_present_flag = r.u(1) != 0;
     }
     if bp.bp_cpb_removal_delay_deltas_present_flag {
-        let num_minus1 = r.ue()?;
+        let num_minus1 = ue_strict(&mut r)?;
         // §D.3.2: 0..=15 — bounds the loop.
         if num_minus1 > 15 {
             return Err(BitstreamError::invalid(format!(
@@ -337,7 +361,7 @@ pub fn decode_buffering_period(msg: &SeiMessage) -> Result<VvcBufferingPeriod, B
             bp.bp_cpb_removal_delay_delta_vals.push(r.u(removal_len));
         }
     }
-    bp.bp_cpb_cnt_minus1 = r.ue()?;
+    bp.bp_cpb_cnt_minus1 = ue_strict(&mut r)?;
     // §D.3.2: 0..=31 — bounds the schedule loops.
     if bp.bp_cpb_cnt_minus1 > 31 {
         return Err(BitstreamError::invalid(format!(
@@ -374,7 +398,7 @@ pub fn decode_buffering_period(msg: &SeiMessage) -> Result<VvcBufferingPeriod, B
     }
     if bp.bp_sublayer_dpb_output_offsets_present_flag {
         for _ in 0..bp.bp_max_sublayers_minus1 {
-            bp.bp_dpb_output_tid_offsets.push(r.ue()?);
+            bp.bp_dpb_output_tid_offsets.push(ue_strict(&mut r)?);
         }
     }
     bp.bp_alt_cpb_params_present_flag = r.u(1) != 0;
@@ -750,7 +774,7 @@ pub fn decode_pic_timing(
     if bp.bp_du_hrd_params_present_flag && bp.bp_du_cpb_params_in_pic_timing_sei_flag {
         let du_len = bp.bp_du_cpb_removal_delay_increment_length_minus1 as u32 + 1;
         let mut du = VvcPtDuInfo::default();
-        let num_du_minus1 = r.ue()?;
+        let num_du_minus1 = ue_strict(&mut r)?;
         // Hostile-input bound: each DU costs at least one bit.
         if num_du_minus1 as u64 > r.bits_remaining() as u64 {
             return Err(BitstreamError::unexpected_end(
@@ -767,7 +791,7 @@ pub fn decode_pic_timing(
                 }
             }
             for i in 0..=num_du_minus1 {
-                du.num_nalus_in_du_minus1.push(r.ue()?);
+                du.num_nalus_in_du_minus1.push(ue_strict(&mut r)?);
                 if !du.pt_du_common_cpb_removal_delay_flag && i < num_du_minus1 {
                     let mut row = [0u32; 8];
                     for (j, v) in row
@@ -784,7 +808,7 @@ pub fn decode_pic_timing(
                 }
             }
         } else {
-            du.num_nalus_in_du_minus1.push(r.ue()?);
+            du.num_nalus_in_du_minus1.push(ue_strict(&mut r)?);
         }
         pt.du = Some(du);
     }
@@ -1059,7 +1083,7 @@ pub fn decode_decoding_unit_info(
     let du_len = bp.bp_du_cpb_removal_delay_increment_length_minus1 as u32 + 1;
     let mut r = BitReader::new(&msg.payload);
     let mut dui = VvcDecodingUnitInfo {
-        dui_decoding_unit_idx: r.ue()?,
+        dui_decoding_unit_idx: ue_strict(&mut r)?,
         ..VvcDecodingUnitInfo::default()
     };
     if !bp.bp_du_cpb_params_in_pic_timing_sei_flag {
@@ -1188,7 +1212,7 @@ pub fn decode_scalable_nesting(msg: &SeiMessage) -> Result<VvcScalableNesting, B
         ..VvcScalableNesting::default()
     };
     if sn.sn_ols_flag {
-        let num_olss_minus1 = r.ue()?;
+        let num_olss_minus1 = ue_strict(&mut r)?;
         // Hostile-input bound: each entry costs at least one bit.
         if num_olss_minus1 as u64 >= r.bits_remaining() as u64 {
             return Err(BitstreamError::unexpected_end(
@@ -1196,12 +1220,12 @@ pub fn decode_scalable_nesting(msg: &SeiMessage) -> Result<VvcScalableNesting, B
             ));
         }
         for _ in 0..=num_olss_minus1 {
-            sn.sn_ols_idx_delta_minus1.push(r.ue()?);
+            sn.sn_ols_idx_delta_minus1.push(ue_strict(&mut r)?);
         }
     } else {
         sn.sn_all_layers_flag = r.u(1) != 0;
         if !sn.sn_all_layers_flag {
-            let num_layers_minus1 = r.ue()?;
+            let num_layers_minus1 = ue_strict(&mut r)?;
             // nuh_layer_id is u(6) so at most 64 layers exist.
             if num_layers_minus1 > 63 {
                 return Err(BitstreamError::invalid(format!(
@@ -1215,8 +1239,8 @@ pub fn decode_scalable_nesting(msg: &SeiMessage) -> Result<VvcScalableNesting, B
         }
     }
     if sn.sn_subpic_flag {
-        let num_subpics_minus1 = r.ue()?;
-        sn.sn_subpic_id_len_minus1 = r.ue()?;
+        let num_subpics_minus1 = ue_strict(&mut r)?;
+        sn.sn_subpic_id_len_minus1 = ue_strict(&mut r)?;
         // §D.6.2: sn_subpic_id_len_minus1 is 0..=15.
         if sn.sn_subpic_id_len_minus1 > 15 {
             return Err(BitstreamError::invalid(format!(
@@ -1234,7 +1258,7 @@ pub fn decode_scalable_nesting(msg: &SeiMessage) -> Result<VvcScalableNesting, B
             sn.sn_subpic_ids.push(r.u(id_bits));
         }
     }
-    let num_seis_minus1 = r.ue()?;
+    let num_seis_minus1 = ue_strict(&mut r)?;
     // §D.6.2: 0..=63.
     if num_seis_minus1 > 63 {
         return Err(BitstreamError::invalid(format!(
@@ -1402,7 +1426,7 @@ pub fn decode_subpic_level_info(msg: &SeiMessage) -> Result<VvcSubpicLevelInfo, 
         ..VvcSubpicLevelInfo::default()
     };
     if sli.sli_explicit_fraction_present_flag {
-        sli.sli_num_subpics_minus1 = r.ue()?;
+        sli.sli_num_subpics_minus1 = ue_strict(&mut r)?;
         // Hostile-input bound: each fraction costs 8 bits per entry.
         if sli.sli_num_subpics_minus1 as u64 * 8 > r.bits_remaining() as u64 {
             return Err(BitstreamError::unexpected_end(
@@ -1959,6 +1983,56 @@ mod tests {
         };
         let msg = encode_subpic_level_info(&sli).expect("SLI encodes");
         assert_eq!(decode_subpic_level_info(&msg).unwrap(), sli);
+    }
+
+    #[test]
+    fn short_payloads_are_rejected_not_zero_filled() {
+        // Fuzz regression: the shared BitReader zero-fills past-the-end
+        // reads, so an empty sei_manifest payload used to "decode" as a
+        // zero-entry manifest whose re-encode was 2 bytes — breaking
+        // the decode→encode byte fixed point. Every truncated payload
+        // must instead be rejected.
+        for (t, payload) in [
+            (SEI_TYPE_SEI_MANIFEST, vec![]),
+            (SEI_TYPE_SEI_MANIFEST, vec![0x00]),
+            (SEI_TYPE_SUBPIC_LEVEL_INFO, vec![]),
+            (SEI_TYPE_BUFFERING_PERIOD, vec![]),
+        ] {
+            let msg = SeiMessage {
+                payload_type: t,
+                payload,
+            };
+            assert!(
+                decode_sei_message(&msg).is_err(),
+                "type {t} short payload must not decode"
+            );
+        }
+    }
+
+    #[test]
+    fn dui_empty_payload_is_rejected_not_phantom_decoded() {
+        // Fuzz regression: with a BP carrying both DU-in-PT flags the
+        // DUI syntax reduces to a single ue(v); on an empty payload
+        // the shared reader's ue() used to return 0 without consuming
+        // anything, so the empty payload "decoded" and re-encoded as
+        // one coded bit plus alignment — breaking the byte fixed
+        // point. ue at end-of-payload must be a hard error.
+        let mut bp = sample_bp();
+        bp.bp_du_cpb_params_in_pic_timing_sei_flag = true;
+        bp.bp_du_dpb_params_in_pic_timing_sei_flag = true;
+        let msg = SeiMessage {
+            payload_type: SEI_TYPE_DECODING_UNIT_INFO,
+            payload: vec![],
+        };
+        assert!(matches!(
+            decode_decoding_unit_info(&msg, &bp, 0).unwrap_err(),
+            BitstreamError::UnexpectedEnd(_)
+        ));
+        // The canonical 1-byte encoding still round-trips.
+        let dui = VvcDecodingUnitInfo::default();
+        let enc = encode_decoding_unit_info(&dui, &bp, 0).unwrap();
+        assert_eq!(enc.payload, vec![0xC0], "ue(0) + payload alignment");
+        assert_eq!(decode_decoding_unit_info(&enc, &bp, 0).unwrap(), dui);
     }
 
     #[test]

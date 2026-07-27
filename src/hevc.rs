@@ -1460,6 +1460,12 @@ pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
     vps.vps_base_layer_available_flag = r.u(1) != 0;
     vps.vps_max_layers_minus1 = r.u(6) as u8;
     vps.vps_max_sub_layers_minus1 = r.u(3) as u8;
+    // §7.4.3.1: 0..=6 (7 is reserved).
+    if vps.vps_max_sub_layers_minus1 > 6 {
+        return Err(BitstreamError::invalid(
+            "VPS vps_max_sub_layers_minus1 must be 0..=6 (§7.4.3.1)",
+        ));
+    }
     vps.vps_temporal_id_nesting_flag = r.u(1) != 0;
     vps.vps_reserved_0xffff_16bits = r.u(16) as u16;
     vps.profile_tier_level = parse_profile_tier_level(&mut r, true, vps.vps_max_sub_layers_minus1)?;
@@ -1576,6 +1582,12 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
         sps_temporal_id_nesting_flag: r.u(1) != 0,
         ..HevcSps::default()
     };
+    // §7.4.3.2.1: 0..=6 (7 is reserved).
+    if sps.sps_max_sub_layers_minus1 > 6 {
+        return Err(BitstreamError::invalid(
+            "SPS sps_max_sub_layers_minus1 must be 0..=6 (§7.4.3.2.1)",
+        ));
+    }
     sps.profile_tier_level = parse_profile_tier_level(&mut r, true, sps.sps_max_sub_layers_minus1)?;
     sps.sps_seq_parameter_set_id = r.ue()? as u8;
     sps.chroma_format_idc = r.ue()? as u8;
