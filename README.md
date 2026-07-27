@@ -77,6 +77,8 @@ src/
 ├── h266.rs          # H.266 Annex-B walker + NAL header + structural VPS / SPS /
 │                    # PPS + picture-header structural prefix (7.3.2.8)
 │                    # (re-exports ebsp_to_rbsp from nal)
+├── h266/aps.rs      # H.266 adaptation parameter set (7.3.2.6) — ALF /
+│                    # LMCS / scaling-list payloads, parse + byte-exact write
 ├── mpeg2.rs         # MPEG-2 sequence + picture + extension headers
 ├── vc1.rs           # VC-1 sequence + entry-point + picture header
 ├── vp8.rs           # VP8 keyframe header + IVF demuxer

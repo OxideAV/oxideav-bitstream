@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- h266: adaptation parameter set family — new `h266::aps` module with
+  the complete §7.3.2.6 `adaptation_parameter_set_rbsp()` walk and
+  all three payload families: ALF (§7.3.2.18 — luma/chroma
+  coefficient sets with clipping indices plus both cross-component
+  filter banks), LMCS (§7.3.2.19 — piecewise-linear model incl. the
+  chroma residual scaling delta) and scaling lists (§7.3.2.20 — all
+  28 ids in §6.5.2 up-right-diagonal delta coding with the 64×64
+  quadrant skip and copy/pred-mode referencing). Byte-exact writers
+  (`write_aps` / `write_aps_nal`) round-trip every accepted parse;
+  spec ranges are enforced (`alf_luma_num_filters_signalled_minus1 ≤
+  24`, coefficient magnitudes ≤ 128, LMCS bin-index ordering,
+  `scaling_list_pred_id_delta ≤ maxIdDelta`, delta coefficients in
+  −128..=127). Reserved `aps_params_type` values and
+  `aps_extension_flag == 1` are refused as `Unsupported`.
 - hevc: byte-exact VPS/SPS/PPS writers — `write_vps`/`write_vps_nal`,
   `write_sps`/`write_sps_nal` and `write_pps`/`write_pps_nal` are full
   inverses of the parsers (§7.3.2.1/§7.3.2.2.1/§7.3.2.3.1 +

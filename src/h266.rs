@@ -48,6 +48,8 @@
 use crate::bit_reader::BitReader;
 use crate::BitstreamError;
 
+pub mod aps;
+
 // ─────────────────────────── NAL unit types (Table 5) ───────────────────────
 
 /// 7.4.2.2 Table 5 — Coded slice of a trailing picture/subpicture (VCL).
