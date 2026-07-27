@@ -294,6 +294,17 @@ pub struct VvcProfileTierLevel {
     /// `profileTierPresentFlag = 0`. Length equals
     /// `ptl_num_sub_profiles` (7.3.3.1).
     pub general_sub_profile_idc: Vec<u32>,
+    /// `gci_present_flag` (7.3.3.2) — only meaningful when
+    /// `profileTierPresentFlag = 1`.
+    pub gci_present_flag: bool,
+    /// The raw `general_constraints_info()` content bits following
+    /// `gci_present_flag`, in coded order (69 fixed fields +
+    /// `gci_num_additional_bits` u(8) + the additional/reserved run;
+    /// empty when `gci_present_flag = 0`). Retained verbatim so
+    /// [`write_profile_tier_level`] can reproduce the structure
+    /// byte-exactly without modelling each of the 70+ constraint
+    /// flags individually.
+    pub gci_bits: Vec<bool>,
 }
 
 /// Parse a `profile_tier_level()` structure (7.3.3.1) at the reader's
@@ -322,16 +333,18 @@ pub fn parse_profile_tier_level(
     let general_level_idc = r.u(8) as u8;
     let ptl_frame_only_constraint_flag = r.u(1) as u8;
     let ptl_multilayer_enabled_flag = r.u(1) as u8;
-    if profile_tier_present_flag {
+    let (gci_present_flag, gci_bits) = if profile_tier_present_flag {
         // 7.3.3.2 — general_constraints_info(). The bridge does not
         // need the individual fields, but we must walk them so the
         // reader is positioned correctly to continue with the
-        // per-sublayer level flags. The structure self-aligns to a
-        // byte boundary at the end (final `gci_alignment_zero_bit`
-        // while-loop), so it is safe to skip its raw bit content and
-        // then `align_to_byte`.
-        walk_general_constraints_info(r)?;
-    }
+        // per-sublayer level flags — and the raw bits are retained so
+        // the writer can reproduce them. The structure self-aligns to
+        // a byte boundary at the end (final `gci_alignment_zero_bit`
+        // while-loop).
+        walk_general_constraints_info(r)?
+    } else {
+        (false, Vec::new())
+    };
     // Spec walks i from MaxNumSubLayersMinus1 - 1 down to 0; we
     // collect the bits in that order then reverse so the storage is
     // indexed low-to-high. That's purely cosmetic — the *bit-pattern*
@@ -371,21 +384,34 @@ pub fn parse_profile_tier_level(
         ptl_sublayer_level_present_flag,
         sublayer_level_idc,
         general_sub_profile_idc,
+        gci_present_flag,
+        gci_bits,
     })
 }
 
 /// Walk 7.3.3.2 `general_constraints_info()` consuming bits until the
 /// structure's terminating `gci_alignment_zero_bit` byte-aligns the
-/// reader. Returns no data; the only caller is
-/// `parse_profile_tier_level`.
-fn walk_general_constraints_info(r: &mut BitReader<'_>) -> Result<(), BitstreamError> {
-    let gci_present_flag = r.u(1);
-    if gci_present_flag != 0 {
+/// reader. Returns `(gci_present_flag, raw content bits)` — the
+/// content is retained verbatim rather than decoded field-by-field;
+/// the only caller is `parse_profile_tier_level`.
+fn walk_general_constraints_info(
+    r: &mut BitReader<'_>,
+) -> Result<(bool, Vec<bool>), BitstreamError> {
+    let gci_present_flag = r.u(1) != 0;
+    let mut bits = Vec::new();
+    let take = |r: &mut BitReader<'_>, n: u32, bits: &mut Vec<bool>| -> u32 {
+        let mut v = 0u32;
+        for _ in 0..n {
+            let b = r.read_bit();
+            bits.push(b != 0);
+            v = (v << 1) | b;
+        }
+        v
+    };
+    if gci_present_flag {
         // 71 single-bit / multi-bit fields up to and including
         // `gci_no_virtual_boundaries_constraint_flag`, then 8 bits of
-        // `gci_num_additional_bits`. The exact bit-by-bit decoding is
-        // not needed by the bridge, so we just count the bits and
-        // skip them in one go.
+        // `gci_num_additional_bits`:
         //
         // /* general */                3 × u(1)                 = 3
         // /* picture format */         u(4) + u(2)              = 6
@@ -400,23 +426,307 @@ fn walk_general_constraints_info(r: &mut BitReader<'_>) -> Result<(), BitstreamE
         //                              69 bits to here
         // plus gci_num_additional_bits u(8)                     = 8
         // total fixed prefix                                    = 77 bits
-        r.skip(69);
-        let gci_num_additional_bits = r.u(8);
+        take(r, 69, &mut bits);
+        let gci_num_additional_bits = take(r, 8, &mut bits);
         let num_additional_bits_used = if gci_num_additional_bits > 5 {
             // 6 named "additional" bits.
-            r.skip(6);
+            take(r, 6, &mut bits);
             6
         } else {
             0
         };
         // gci_reserved_bit[i] for the remainder.
         if gci_num_additional_bits > num_additional_bits_used {
-            r.skip((gci_num_additional_bits - num_additional_bits_used) as usize);
+            take(
+                r,
+                gci_num_additional_bits - num_additional_bits_used,
+                &mut bits,
+            );
         }
     }
     // Final while(!byte_aligned()) gci_alignment_zero_bit.
     r.align_to_byte();
+    Ok((gci_present_flag, bits))
+}
+
+/// Emit a `profile_tier_level( profileTierPresentFlag,
+/// maxNumSubLayersMinus1 )` structure (7.3.3.1) — the byte-exact
+/// inverse of [`parse_profile_tier_level`] for conforming inputs (the
+/// spec's reserved/alignment zero bits are re-emitted as zeros).
+pub fn write_profile_tier_level(
+    w: &mut crate::bit_writer::BitWriter,
+    ptl: &VvcProfileTierLevel,
+    profile_tier_present_flag: bool,
+    max_sublayers_minus1: u32,
+) -> Result<(), BitstreamError> {
+    if profile_tier_present_flag {
+        let (Some(profile_idc), Some(tier_flag)) = (ptl.general_profile_idc, ptl.general_tier_flag)
+        else {
+            return Err(BitstreamError::invalid(
+                "profile_tier_level: profile/tier fields required when \
+                 profileTierPresentFlag is set (7.3.3.1)",
+            ));
+        };
+        if profile_idc > 0x7f {
+            return Err(BitstreamError::invalid(
+                "general_profile_idc does not fit u(7)",
+            ));
+        }
+        w.write_bits(profile_idc as u32, 7);
+        w.write_bit(tier_flag as u32 & 1);
+    } else if ptl.general_profile_idc.is_some()
+        || ptl.general_tier_flag.is_some()
+        || !ptl.general_sub_profile_idc.is_empty()
+        || ptl.gci_present_flag
+    {
+        return Err(BitstreamError::invalid(
+            "profile_tier_level: profile-gated fields present without \
+             profileTierPresentFlag (7.3.3.1)",
+        ));
+    }
+    w.write_bits(ptl.general_level_idc as u32, 8);
+    w.write_bit(ptl.ptl_frame_only_constraint_flag as u32 & 1);
+    w.write_bit(ptl.ptl_multilayer_enabled_flag as u32 & 1);
+    if profile_tier_present_flag {
+        // general_constraints_info() — presence flag + retained raw
+        // content bits + gci_alignment_zero_bit run.
+        w.write_bit(u32::from(ptl.gci_present_flag));
+        if ptl.gci_present_flag {
+            if ptl.gci_bits.len() < 77 {
+                return Err(BitstreamError::invalid(
+                    "general_constraints_info content must cover the 77-bit fixed \
+                     prefix (7.3.3.2)",
+                ));
+            }
+            for &b in &ptl.gci_bits {
+                w.write_bit(u32::from(b));
+            }
+        } else if !ptl.gci_bits.is_empty() {
+            return Err(BitstreamError::invalid(
+                "general_constraints_info content bits without gci_present_flag",
+            ));
+        }
+        w.align_to_byte();
+    }
+    let n_sub = max_sublayers_minus1 as usize;
+    if ptl.ptl_sublayer_level_present_flag.len() != n_sub {
+        return Err(BitstreamError::invalid(format!(
+            "profile_tier_level sublayer flag entries ({}) != maxNumSubLayersMinus1 ({n_sub})",
+            ptl.ptl_sublayer_level_present_flag.len()
+        )));
+    }
+    for i in (0..n_sub).rev() {
+        w.write_bit(ptl.ptl_sublayer_level_present_flag[i] as u32 & 1);
+    }
+    w.align_to_byte(); // ptl_reserved_zero_bit run
+    let present_count = ptl
+        .ptl_sublayer_level_present_flag
+        .iter()
+        .filter(|&&f| f != 0)
+        .count();
+    if ptl.sublayer_level_idc.len() != present_count {
+        return Err(BitstreamError::invalid(
+            "profile_tier_level sublayer_level_idc entries must match the present flags",
+        ));
+    }
+    // The parser stores level idcs low-to-high; the wire order is
+    // high-to-low over the present sublayers.
+    let mut idc_iter = ptl.sublayer_level_idc.iter().rev();
+    for i in (0..n_sub).rev() {
+        if ptl.ptl_sublayer_level_present_flag[i] != 0 {
+            let idc = idc_iter.next().expect("length validated above");
+            w.write_bits(*idc as u32, 8);
+        }
+    }
+    if profile_tier_present_flag {
+        if ptl.general_sub_profile_idc.len() > 255 {
+            return Err(BitstreamError::invalid(
+                "ptl_num_sub_profiles does not fit u(8)",
+            ));
+        }
+        w.write_bits(ptl.general_sub_profile_idc.len() as u32, 8);
+        for &idc in &ptl.general_sub_profile_idc {
+            w.write_bits(idc, 32);
+        }
+    }
     Ok(())
+}
+
+// ─────────────────────────── OPI RBSP (7.3.2.2) ─────────────────────────────
+
+/// Operating point information RBSP (7.3.2.2 / 7.4.3.2). The OPI NAL
+/// (type 12) tells the decoder which OLS and/or highest temporal
+/// sublayer to operate on, overriding external means.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VvcOpi {
+    /// `Some(opi_ols_idx)` iff `opi_ols_info_present_flag`.
+    pub opi_ols_idx: Option<u32>,
+    /// `Some(opi_htid_plus1)` (u(3)) iff `opi_htid_info_present_flag`.
+    pub opi_htid_plus1: Option<u8>,
+    /// Retained; the extension payload itself is not, so the writer
+    /// refuses `true`.
+    pub opi_extension_flag: bool,
+}
+
+/// Parse an OPI NAL (two-byte NAL header at index 0..1).
+pub fn parse_opi(nal_body: &[u8]) -> Result<VvcOpi, BitstreamError> {
+    if nal_body.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "H.266 OPI NAL needs at least the 2-byte header",
+        ));
+    }
+    let header = parse_nal_header(nal_body)?;
+    if header.nal_unit_type != NAL_TYPE_OPI {
+        return Err(BitstreamError::invalid(format!(
+            "expected OPI NAL (type {NAL_TYPE_OPI}), got {}",
+            header.nal_unit_type
+        )));
+    }
+    let rbsp = ebsp_to_rbsp(&nal_body[2..]);
+    let mut r = BitReader::new(&rbsp);
+    let ols_info_present = r.u(1) != 0;
+    let htid_info_present = r.u(1) != 0;
+    let mut opi = VvcOpi::default();
+    if ols_info_present {
+        opi.opi_ols_idx = Some(r.ue()?);
+    }
+    if htid_info_present {
+        opi.opi_htid_plus1 = Some(r.u(3) as u8);
+    }
+    opi.opi_extension_flag = r.u(1) != 0;
+    if !opi.opi_extension_flag {
+        r.read_rbsp_trailing_bits()?;
+    }
+    Ok(opi)
+}
+
+/// Emit an `operating_point_information_rbsp()` (7.3.2.2 including
+/// `rbsp_trailing_bits()`) — the byte-exact inverse of [`parse_opi`]'s
+/// RBSP walk. `opi_extension_flag == 1` (unretained extension
+/// payload) is refused as [`BitstreamError::Unsupported`].
+pub fn write_opi(opi: &VvcOpi) -> Result<Vec<u8>, BitstreamError> {
+    if opi.opi_extension_flag {
+        return Err(BitstreamError::unsupported(
+            "H.266 OPI opi_extension_flag == 1 (unretained opi_extension_data_flag bits)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_bit(u32::from(opi.opi_ols_idx.is_some()));
+    w.write_bit(u32::from(opi.opi_htid_plus1.is_some()));
+    if let Some(idx) = opi.opi_ols_idx {
+        w.write_ue(idx)?;
+    }
+    if let Some(htid) = opi.opi_htid_plus1 {
+        if htid > 7 {
+            return Err(BitstreamError::invalid("opi_htid_plus1 does not fit u(3)"));
+        }
+        w.write_bits(htid as u32, 3);
+    }
+    w.write_bit(0); // opi_extension_flag (refused above when set)
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete OPI NAL (canonical header: layer 0, TID 0).
+pub fn write_opi_nal(opi: &VvcOpi) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_opi(opi)?;
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(0x00);
+    out.push((NAL_TYPE_OPI << 3) | 0x01);
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
+}
+
+// ─────────────────────────── DCI RBSP (7.3.2.1) ─────────────────────────────
+
+/// Decoding capability information RBSP (7.3.2.1 / 7.4.3.1). The DCI
+/// NAL (type 13) carries a list of `profile_tier_level(1, 0)`
+/// structures; a bitstream conforms if at least one of them is
+/// satisfied for every CVS.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VvcDci {
+    /// `dci_reserved_zero_4bits` — zero in conforming streams;
+    /// retained verbatim (decoders shall ignore the value, 7.4.3.1).
+    pub dci_reserved_zero_4bits: u8,
+    /// 1..=16 entries (`dci_num_ptls_minus1` u(4)).
+    pub profile_tier_levels: Vec<VvcProfileTierLevel>,
+    /// Retained; the extension payload itself is not, so the writer
+    /// refuses `true`.
+    pub dci_extension_flag: bool,
+}
+
+/// Parse a DCI NAL (two-byte NAL header at index 0..1).
+pub fn parse_dci(nal_body: &[u8]) -> Result<VvcDci, BitstreamError> {
+    if nal_body.len() < 2 {
+        return Err(BitstreamError::unexpected_end(
+            "H.266 DCI NAL needs at least the 2-byte header",
+        ));
+    }
+    let header = parse_nal_header(nal_body)?;
+    if header.nal_unit_type != NAL_TYPE_DCI {
+        return Err(BitstreamError::invalid(format!(
+            "expected DCI NAL (type {NAL_TYPE_DCI}), got {}",
+            header.nal_unit_type
+        )));
+    }
+    let rbsp = ebsp_to_rbsp(&nal_body[2..]);
+    let mut r = BitReader::new(&rbsp);
+    let mut dci = VvcDci {
+        dci_reserved_zero_4bits: r.u(4) as u8,
+        ..VvcDci::default()
+    };
+    let num_ptls_minus1 = r.u(4);
+    for _ in 0..=num_ptls_minus1 {
+        dci.profile_tier_levels
+            .push(parse_profile_tier_level(&mut r, true, 0)?);
+    }
+    dci.dci_extension_flag = r.u(1) != 0;
+    if !dci.dci_extension_flag {
+        r.read_rbsp_trailing_bits()?;
+    }
+    Ok(dci)
+}
+
+/// Emit a `decoding_capability_information_rbsp()` (7.3.2.1 including
+/// `rbsp_trailing_bits()`) — the byte-exact inverse of [`parse_dci`]'s
+/// RBSP walk for conforming inputs. `dci_extension_flag == 1`
+/// (unretained extension payload) is refused as
+/// [`BitstreamError::Unsupported`].
+pub fn write_dci(dci: &VvcDci) -> Result<Vec<u8>, BitstreamError> {
+    if dci.dci_extension_flag {
+        return Err(BitstreamError::unsupported(
+            "H.266 DCI dci_extension_flag == 1 (unretained dci_extension_data_flag bits)",
+        ));
+    }
+    if dci.profile_tier_levels.is_empty() || dci.profile_tier_levels.len() > 16 {
+        return Err(BitstreamError::invalid(
+            "DCI must carry 1..=16 profile_tier_level structures (dci_num_ptls_minus1 u(4))",
+        ));
+    }
+    if dci.dci_reserved_zero_4bits > 0x0f {
+        return Err(BitstreamError::invalid(
+            "dci_reserved_zero_4bits does not fit u(4)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_bits(dci.dci_reserved_zero_4bits as u32, 4);
+    w.write_bits(dci.profile_tier_levels.len() as u32 - 1, 4);
+    for ptl in &dci.profile_tier_levels {
+        write_profile_tier_level(&mut w, ptl, true, 0)?;
+    }
+    w.write_bit(0); // dci_extension_flag (refused above when set)
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete DCI NAL (canonical header: layer 0, TID 0).
+pub fn write_dci_nal(dci: &VvcDci) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_dci(dci)?;
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(0x00);
+    out.push((NAL_TYPE_DCI << 3) | 0x01);
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
 }
 
 // ─────────────────────────── VPS RBSP (7.3.2.3) ─────────────────────────────
@@ -1272,6 +1582,119 @@ pub fn write_aud(aud: &VvcAccessUnitDelimiter) -> Result<Vec<u8>, BitstreamError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opi_parses_and_roundtrips_byte_exact() {
+        // Both info fields present.
+        let mut w = crate::bit_writer::BitWriter::new();
+        w.write_bit(1); // opi_ols_info_present_flag
+        w.write_bit(1); // opi_htid_info_present_flag
+        w.write_ue(5).unwrap(); // opi_ols_idx
+        w.write_bits(3, 3); // opi_htid_plus1
+        w.write_bit(0); // opi_extension_flag
+        w.write_rbsp_trailing_bits();
+        let mut nal = vec![0x00, (NAL_TYPE_OPI << 3) | 0x01];
+        nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
+
+        let opi = parse_opi(&nal).expect("OPI parses");
+        assert_eq!(opi.opi_ols_idx, Some(5));
+        assert_eq!(opi.opi_htid_plus1, Some(3));
+        assert!(!opi.opi_extension_flag);
+        assert_eq!(
+            write_opi_nal(&opi).expect("OPI writes"),
+            nal,
+            "OPI parse→write must be byte-exact"
+        );
+
+        // Neither present — the minimal OPI.
+        let empty = VvcOpi::default();
+        let nal2 = write_opi_nal(&empty).unwrap();
+        assert_eq!(parse_opi(&nal2).unwrap(), empty);
+
+        // Extension flag refused on write.
+        let ext = VvcOpi {
+            opi_extension_flag: true,
+            ..VvcOpi::default()
+        };
+        assert!(matches!(
+            write_opi(&ext).unwrap_err(),
+            BitstreamError::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn dci_parses_and_roundtrips_byte_exact() {
+        // Two PTLs: one with GCI content + a sub-profile, one minimal.
+        let mut w = crate::bit_writer::BitWriter::new();
+        w.write_bits(0, 4); // dci_reserved_zero_4bits
+        w.write_bits(1, 4); // dci_num_ptls_minus1 = 1
+                            // PTL 0 — profile_tier_level(1, 0):
+        w.write_bits(1, 7); // general_profile_idc
+        w.write_bit(0); // general_tier_flag
+        w.write_bits(51, 8); // general_level_idc
+        w.write_bit(1); // ptl_frame_only_constraint_flag
+        w.write_bit(0); // ptl_multilayer_enabled_flag
+        w.write_bit(1); // gci_present_flag
+        for i in 0..69u32 {
+            w.write_bit(u32::from(i % 5 == 0)); // fixed constraint fields
+        }
+        w.write_bits(2, 8); // gci_num_additional_bits = 2
+        w.write_bit(1); // gci_reserved_bit[0]
+        w.write_bit(0); // gci_reserved_bit[1]
+        w.align_to_byte(); // gci_alignment_zero_bit
+                           // (max_sublayers_minus1 == 0: no sublayer flags)
+        w.align_to_byte(); // ptl_reserved_zero_bit (no-op, already aligned)
+        w.write_bits(1, 8); // ptl_num_sub_profiles = 1
+        w.write_bits(0xDEAD_BEEF_u32, 32); // general_sub_profile_idc[0]
+                                           // PTL 1 — minimal:
+        w.write_bits(2, 7);
+        w.write_bit(1);
+        w.write_bits(83, 8);
+        w.write_bit(0);
+        w.write_bit(0);
+        w.write_bit(0); // gci_present_flag = 0
+        w.align_to_byte();
+        w.write_bits(0, 8); // ptl_num_sub_profiles = 0
+        w.write_bit(0); // dci_extension_flag
+        w.write_rbsp_trailing_bits();
+        let mut nal = vec![0x00, (NAL_TYPE_DCI << 3) | 0x01];
+        nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
+
+        let dci = parse_dci(&nal).expect("DCI parses");
+        assert_eq!(dci.profile_tier_levels.len(), 2);
+        let p0 = &dci.profile_tier_levels[0];
+        assert_eq!(p0.general_profile_idc, Some(1));
+        assert_eq!(p0.general_level_idc, 51);
+        assert!(p0.gci_present_flag);
+        assert_eq!(p0.gci_bits.len(), 69 + 8 + 2);
+        assert!(p0.gci_bits[0]); // i % 5 == 0
+        assert_eq!(p0.general_sub_profile_idc, vec![0xDEAD_BEEF]);
+        let p1 = &dci.profile_tier_levels[1];
+        assert_eq!(p1.general_profile_idc, Some(2));
+        assert_eq!(p1.general_tier_flag, Some(1));
+        assert!(!p1.gci_present_flag);
+        assert!(p1.gci_bits.is_empty());
+        assert_eq!(
+            write_dci_nal(&dci).expect("DCI writes"),
+            nal,
+            "DCI parse→write must be byte-exact"
+        );
+
+        // Writer refusals: extension flag, empty PTL list.
+        let ext = VvcDci {
+            dci_extension_flag: true,
+            profile_tier_levels: dci.profile_tier_levels.clone(),
+            ..VvcDci::default()
+        };
+        assert!(matches!(
+            write_dci(&ext).unwrap_err(),
+            BitstreamError::Unsupported(_)
+        ));
+        assert!(matches!(
+            write_dci(&VvcDci::default()).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
+    }
 
     #[test]
     fn split_annex_b_three_byte_start_codes() {

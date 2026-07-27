@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- h266: OPI + DCI RBSPs — `parse_opi` / `write_opi` / `write_opi_nal`
+  (operating point information, §7.3.2.2) and `parse_dci` /
+  `write_dci` / `write_dci_nal` (decoding capability information,
+  §7.3.2.1 with 1..=16 `profile_tier_level(1, 0)` entries), both
+  byte-exact parse→write inverses. `profile_tier_level()` parsing is
+  now lossless: the `general_constraints_info()` (§7.3.3.2) content
+  bits are retained verbatim on `VvcProfileTierLevel` (new
+  `gci_present_flag` / `gci_bits` fields) and a public
+  `write_profile_tier_level` emits the full §7.3.3.1 structure.
+  Unretained `opi/dci_extension_flag == 1` payloads are refused as
+  `Unsupported`.
 - h266: SEI family — new `h266::sei` module with the §7.3.2.9 /
   §7.3.6 `sei_rbsp()`/`sei_message()` framing (0xFF run-length
   accumulation, declared-size validation, byte-exact framing writers)

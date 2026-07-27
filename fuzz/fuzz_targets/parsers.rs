@@ -72,6 +72,7 @@ fuzz_target!(|data: &[u8]| {
     drive_h264_writer_roundtrips(data);
     drive_hevc_writer_roundtrips(data);
     drive_h266_aps_roundtrips(data);
+    drive_h266_opi_dci_roundtrips(data);
     drive_h266_sei_roundtrips(data);
     drive_av1_metadata_roundtrip(data);
     drive_framing_roundtrips(data);
@@ -155,10 +156,12 @@ fn drive_single_arg_parsers(slice: &[u8]) {
     let _ = h266::parse_pps(slice);
     let _ = h266::parse_picture_header(slice);
     let _ = h266::parse_aud(slice);
-    // H.266 APS (NAL-level and RBSP-level) + SEI framing / typed
-    // decoders (context-free families).
+    // H.266 APS (NAL-level and RBSP-level) + OPI / DCI + SEI framing
+    // / typed decoders (context-free families).
     let _ = h266::aps::parse_aps(slice);
     let _ = h266::aps::parse_aps_rbsp(slice);
+    let _ = h266::parse_opi(slice);
+    let _ = h266::parse_dci(slice);
     if let Ok(msgs) = h266::sei::parse_sei_rbsp(slice) {
         for m in &msgs {
             let _ = h266::sei::decode_sei_message(m);
@@ -341,6 +344,38 @@ fn drive_h266_aps_roundtrips(data: &[u8]) {
                 "H.266 APS writer refused a representable parsed APS"
             ),
             Err(e) => panic!("H.266 APS writer rejected parser output: {e:?}"),
+        }
+    }
+}
+
+/// H.266 OPI / DCI parse→write→parse fixed points (struct level —
+/// the parsers tolerate trailing padding the writers do not repeat).
+fn drive_h266_opi_dci_roundtrips(data: &[u8]) {
+    use oxideav_bitstream::BitstreamError;
+    if let Ok(opi) = h266::parse_opi(data) {
+        match h266::write_opi_nal(&opi) {
+            Ok(nal) => {
+                let re = h266::parse_opi(&nal).expect("written H.266 OPI re-parses");
+                assert_eq!(re, opi, "H.266 OPI parse→write→parse fixed point");
+            }
+            Err(BitstreamError::Unsupported(_)) => assert!(
+                opi.opi_extension_flag,
+                "H.266 OPI writer refused a representable parsed OPI"
+            ),
+            Err(e) => panic!("H.266 OPI writer rejected parser output: {e:?}"),
+        }
+    }
+    if let Ok(dci) = h266::parse_dci(data) {
+        match h266::write_dci_nal(&dci) {
+            Ok(nal) => {
+                let re = h266::parse_dci(&nal).expect("written H.266 DCI re-parses");
+                assert_eq!(re, dci, "H.266 DCI parse→write→parse fixed point");
+            }
+            Err(BitstreamError::Unsupported(_)) => assert!(
+                dci.dci_extension_flag,
+                "H.266 DCI writer refused a representable parsed DCI"
+            ),
+            Err(e) => panic!("H.266 DCI writer rejected parser output: {e:?}"),
         }
     }
 }

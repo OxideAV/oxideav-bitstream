@@ -75,7 +75,8 @@ src/
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
 │                    # (re-exports ebsp_to_rbsp from nal)
 ├── h266.rs          # H.266 Annex-B walker + NAL header + structural VPS / SPS /
-│                    # PPS + picture-header structural prefix (7.3.2.8)
+│                    # PPS + picture-header structural prefix (7.3.2.8) +
+│                    # OPI / DCI parse + byte-exact write (lossless PTL/GCI)
 │                    # (re-exports ebsp_to_rbsp from nal)
 ├── h266/aps.rs      # H.266 adaptation parameter set (7.3.2.6) — ALF /
 │                    # LMCS / scaling-list payloads, parse + byte-exact write
