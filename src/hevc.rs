@@ -107,9 +107,13 @@ pub fn is_irap(nal_unit_type: u8) -> bool {
 
 // ─────────────────────────── Output structs ──────────────────────────────────
 
-/// Profile / tier / level info from `profile_tier_level()`. Just the
-/// fields the HW backends look at; the 32 sub-layer profiles and
-/// flags are intentionally skipped.
+/// Profile / tier / level info from `profile_tier_level()` (§7.3.3).
+///
+/// The walk is lossless: besides the fields the HW backends look at,
+/// the 48 constraint/reserved bits after the compatibility flags, the
+/// inter-sub-layer reserved bits and every coded sub-layer
+/// profile/level entry are retained so [`write_profile_tier_level`]
+/// can reproduce the structure byte-exactly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HevcProfileTierLevel {
     pub general_profile_space: u8,
@@ -117,7 +121,47 @@ pub struct HevcProfileTierLevel {
     pub general_profile_idc: u8,
     /// 32-bit packed `general_profile_compatibility_flag[0..32]`.
     pub general_profile_compatibility_flags: u32,
+    /// The 48 bits following the compatibility flags, in coded order:
+    /// `general_progressive_source_flag`,
+    /// `general_interlaced_source_flag`,
+    /// `general_non_packed_constraint_flag`,
+    /// `general_frame_only_constraint_flag`, the 43
+    /// profile-dependent constraint/reserved bits and the final
+    /// `general_inbld_flag` / reserved bit (§7.3.3). Bit 47 of this
+    /// value is the first coded bit.
+    pub general_constraint_bits: u64,
     pub general_level_idc: u8,
+    /// The `reserved_zero_2bits[i]` run coded between the sub-layer
+    /// presence flags and the sub-layer payloads — `2 * (8 −
+    /// maxNumSubLayersMinus1)` bits, first coded bit in the highest
+    /// used bit position. Zero in conforming streams.
+    pub sub_layer_reserved_bits: u16,
+    /// One entry per sub-layer `i` in `0..maxNumSubLayersMinus1`.
+    pub sub_layers: Vec<HevcSubLayerPtl>,
+}
+
+/// One sub-layer entry of `profile_tier_level()` (§7.3.3). Each half
+/// is `Some` iff the matching
+/// `sub_layer_profile_present_flag[i]` / `sub_layer_level_present_flag[i]`
+/// was set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HevcSubLayerPtl {
+    pub profile: Option<HevcSubLayerProfile>,
+    pub level_idc: Option<u8>,
+}
+
+/// Sub-layer profile fields (§7.3.3) — same shape as the general
+/// block: space / tier / idc / compatibility flags plus the 48
+/// constraint/reserved bits in coded order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HevcSubLayerProfile {
+    pub profile_space: u8,
+    pub tier_flag: bool,
+    pub profile_idc: u8,
+    pub profile_compatibility_flags: u32,
+    /// 48 bits, packed like
+    /// [`HevcProfileTierLevel::general_constraint_bits`].
+    pub constraint_bits: u64,
 }
 
 /// Conformance cropping rectangle, in luma samples.
@@ -250,6 +294,35 @@ pub struct HevcShortTermRps {
     pub used_by_curr_pic_s0: Vec<bool>,
     pub delta_poc_s1: Vec<i32>,
     pub used_by_curr_pic_s1: Vec<bool>,
+    /// The raw §7.3.7 coding this set arrived in. The resolved
+    /// `delta_poc_s0/s1` vectors above are derivation outputs; the
+    /// byte-exact writer needs the original coding choice (explicit
+    /// vs. inter-set-predicted) plus the predicted branch's raw
+    /// syntax elements to reproduce the bitstream.
+    pub coding: HevcStRpsCoding,
+}
+
+/// Raw `st_ref_pic_set()` coding shape (§7.3.7).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HevcStRpsCoding {
+    /// `inter_ref_pic_set_prediction_flag == 0` (or `stRpsIdx == 0`).
+    /// The explicit `delta_poc_s0/s1_minus1` values are recoverable
+    /// from the resolved vectors (consecutive differences), so no
+    /// extra state is needed.
+    #[default]
+    Explicit,
+    /// `inter_ref_pic_set_prediction_flag == 1`. Holds the raw
+    /// prediction syntax; both flag vectors have
+    /// `NumDeltaPocs[RefRpsIdx] + 1` entries. `use_delta_flag[j]` is
+    /// only coded when `used_by_curr_pic_flag[j] == 0` and is
+    /// inferred to 1 otherwise (§7.4.8) — inferred entries are stored
+    /// as `true`.
+    InterPredicted {
+        delta_rps_sign: bool,
+        abs_delta_rps_minus1: u32,
+        used_by_curr_pic_flag: Vec<bool>,
+        use_delta_flag: Vec<bool>,
+    },
 }
 
 impl HevcShortTermRps {
@@ -312,7 +385,15 @@ fn parse_st_ref_pic_set(
         // Derivation (7-61) / (7-62).
         let ref_neg = ref_rps.num_negative_pics();
         let ref_pos = ref_rps.num_positive_pics();
-        let mut out = HevcShortTermRps::default();
+        let mut out = HevcShortTermRps {
+            coding: HevcStRpsCoding::InterPredicted {
+                delta_rps_sign: delta_rps_sign != 0,
+                abs_delta_rps_minus1,
+                used_by_curr_pic_flag: used_by_curr.clone(),
+                use_delta_flag: use_delta.clone(),
+            },
+            ..HevcShortTermRps::default()
+        };
         for j in (0..ref_pos).rev() {
             let d_poc = ref_rps.delta_poc_s1[j] + delta_rps;
             if d_poc < 0 && use_delta[ref_neg + j] {
@@ -394,6 +475,180 @@ fn parse_st_ref_pic_set(
         }
         Ok(out)
     }
+}
+
+/// Emit one `st_ref_pic_set( stRpsIdx )` (§7.3.7) — the byte-exact
+/// inverse of [`parse_st_ref_pic_set`].
+///
+/// For the inter-predicted coding the resolved `delta_poc_s0/s1`
+/// vectors are re-derived from the raw syntax against `previous` and
+/// compared with the stored ones, so an inconsistent hand-built set is
+/// rejected instead of silently emitting a stream that would resolve
+/// differently.
+fn write_st_ref_pic_set(
+    w: &mut crate::bit_writer::BitWriter,
+    st_rps_idx: usize,
+    rps: &HevcShortTermRps,
+    previous: &[HevcShortTermRps],
+    max_dec_pic_buffering_minus1: u32,
+) -> Result<(), BitstreamError> {
+    match &rps.coding {
+        HevcStRpsCoding::Explicit => {
+            if st_rps_idx != 0 {
+                w.write_bit(0); // inter_ref_pic_set_prediction_flag
+            }
+            let num_neg = rps.delta_poc_s0.len();
+            let num_pos = rps.delta_poc_s1.len();
+            if rps.used_by_curr_pic_s0.len() != num_neg || rps.used_by_curr_pic_s1.len() != num_pos
+            {
+                return Err(BitstreamError::invalid(
+                    "st_ref_pic_set used_by_curr flag vectors must match delta_poc lengths",
+                ));
+            }
+            if num_neg as u64 > max_dec_pic_buffering_minus1 as u64
+                || num_pos as u64
+                    > (max_dec_pic_buffering_minus1 as u64).saturating_sub(num_neg as u64)
+            {
+                return Err(BitstreamError::invalid(
+                    "st_ref_pic_set entry counts exceed sps_max_dec_pic_buffering_minus1 (§7.4.8)",
+                ));
+            }
+            w.write_ue(num_neg as u32)?;
+            w.write_ue(num_pos as u32)?;
+            let mut prev: i32 = 0;
+            for (i, &d_poc) in rps.delta_poc_s0.iter().enumerate() {
+                // (7-67)/(7-69): delta_poc_s0_minus1[i] = prev − DeltaPocS0[i] − 1.
+                let minus1 = prev as i64 - d_poc as i64 - 1;
+                if !(0..=(1 << 15) - 1).contains(&minus1) {
+                    return Err(BitstreamError::invalid(format!(
+                        "st_ref_pic_set delta_poc_s0[{i}] not strictly decreasing \
+                         within 0..=32767 steps (§7.4.8)"
+                    )));
+                }
+                w.write_ue(minus1 as u32)?;
+                w.write_bit(u32::from(rps.used_by_curr_pic_s0[i]));
+                prev = d_poc;
+            }
+            let mut prev: i32 = 0;
+            for (i, &d_poc) in rps.delta_poc_s1.iter().enumerate() {
+                let minus1 = d_poc as i64 - prev as i64 - 1;
+                if !(0..=(1 << 15) - 1).contains(&minus1) {
+                    return Err(BitstreamError::invalid(format!(
+                        "st_ref_pic_set delta_poc_s1[{i}] not strictly increasing \
+                         within 0..=32767 steps (§7.4.8)"
+                    )));
+                }
+                w.write_ue(minus1 as u32)?;
+                w.write_bit(u32::from(rps.used_by_curr_pic_s1[i]));
+                prev = d_poc;
+            }
+        }
+        HevcStRpsCoding::InterPredicted {
+            delta_rps_sign,
+            abs_delta_rps_minus1,
+            used_by_curr_pic_flag,
+            use_delta_flag,
+        } => {
+            if st_rps_idx == 0 {
+                return Err(BitstreamError::invalid(
+                    "st_ref_pic_set 0 cannot use inter-set prediction (§7.3.7)",
+                ));
+            }
+            if *abs_delta_rps_minus1 > (1 << 15) - 1 {
+                return Err(BitstreamError::invalid(
+                    "st_ref_pic_set abs_delta_rps_minus1 out of 0..=32767 (§7.4.8)",
+                ));
+            }
+            let ref_rps = previous.last().ok_or_else(|| {
+                BitstreamError::invalid("st_ref_pic_set inter prediction with no prior set")
+            })?;
+            let num_delta = ref_rps.num_delta_pocs();
+            if used_by_curr_pic_flag.len() != num_delta + 1 || use_delta_flag.len() != num_delta + 1
+            {
+                return Err(BitstreamError::invalid(format!(
+                    "st_ref_pic_set prediction flag vectors must have \
+                     NumDeltaPocs[RefRpsIdx] + 1 = {} entries",
+                    num_delta + 1
+                )));
+            }
+            w.write_bit(1); // inter_ref_pic_set_prediction_flag
+            w.write_bit(u32::from(*delta_rps_sign));
+            w.write_ue(*abs_delta_rps_minus1)?;
+            for j in 0..=num_delta {
+                w.write_bit(u32::from(used_by_curr_pic_flag[j]));
+                if !used_by_curr_pic_flag[j] {
+                    w.write_bit(u32::from(use_delta_flag[j]));
+                } else if !use_delta_flag[j] {
+                    return Err(BitstreamError::invalid(format!(
+                        "st_ref_pic_set use_delta_flag[{j}] must be true (inferred) when \
+                         used_by_curr_pic_flag[{j}] is set (§7.4.8)"
+                    )));
+                }
+            }
+            // Integrity: re-derive (7-61)/(7-62) and require the
+            // stored resolved vectors to match.
+            let delta_rps =
+                (1 - 2 * i64::from(*delta_rps_sign)) as i32 * (*abs_delta_rps_minus1 as i32 + 1);
+            let ref_neg = ref_rps.num_negative_pics();
+            let ref_pos = ref_rps.num_positive_pics();
+            let mut derived = HevcShortTermRps::default();
+            for j in (0..ref_pos).rev() {
+                let d_poc = ref_rps.delta_poc_s1[j] + delta_rps;
+                if d_poc < 0 && use_delta_flag[ref_neg + j] {
+                    derived.delta_poc_s0.push(d_poc);
+                    derived
+                        .used_by_curr_pic_s0
+                        .push(used_by_curr_pic_flag[ref_neg + j]);
+                }
+            }
+            if delta_rps < 0 && use_delta_flag[num_delta] {
+                derived.delta_poc_s0.push(delta_rps);
+                derived
+                    .used_by_curr_pic_s0
+                    .push(used_by_curr_pic_flag[num_delta]);
+            }
+            for j in 0..ref_neg {
+                let d_poc = ref_rps.delta_poc_s0[j] + delta_rps;
+                if d_poc < 0 && use_delta_flag[j] {
+                    derived.delta_poc_s0.push(d_poc);
+                    derived.used_by_curr_pic_s0.push(used_by_curr_pic_flag[j]);
+                }
+            }
+            for j in (0..ref_neg).rev() {
+                let d_poc = ref_rps.delta_poc_s0[j] + delta_rps;
+                if d_poc > 0 && use_delta_flag[j] {
+                    derived.delta_poc_s1.push(d_poc);
+                    derived.used_by_curr_pic_s1.push(used_by_curr_pic_flag[j]);
+                }
+            }
+            if delta_rps > 0 && use_delta_flag[num_delta] {
+                derived.delta_poc_s1.push(delta_rps);
+                derived
+                    .used_by_curr_pic_s1
+                    .push(used_by_curr_pic_flag[num_delta]);
+            }
+            for j in 0..ref_pos {
+                let d_poc = ref_rps.delta_poc_s1[j] + delta_rps;
+                if d_poc > 0 && use_delta_flag[ref_neg + j] {
+                    derived.delta_poc_s1.push(d_poc);
+                    derived
+                        .used_by_curr_pic_s1
+                        .push(used_by_curr_pic_flag[ref_neg + j]);
+                }
+            }
+            if derived.delta_poc_s0 != rps.delta_poc_s0
+                || derived.used_by_curr_pic_s0 != rps.used_by_curr_pic_s0
+                || derived.delta_poc_s1 != rps.delta_poc_s1
+                || derived.used_by_curr_pic_s1 != rps.used_by_curr_pic_s1
+            {
+                return Err(BitstreamError::invalid(
+                    "st_ref_pic_set resolved DeltaPocS0/S1 vectors do not match the \
+                     inter-predicted coding's §7.4.8 derivation",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─────────────────────────── VUI / HRD (Annex E) ────────────────────────────
@@ -750,7 +1005,16 @@ pub struct HevcVps {
     pub vps_max_layers_minus1: u8,
     pub vps_max_sub_layers_minus1: u8,
     pub vps_temporal_id_nesting_flag: bool,
+    /// `vps_reserved_0xffff_16bits` — 0xFFFF in conforming streams;
+    /// retained verbatim (decoders shall ignore the value, §7.4.3.1).
+    pub vps_reserved_0xffff_16bits: u16,
     pub profile_tier_level: HevcProfileTierLevel,
+    pub vps_sub_layer_ordering_info_present_flag: bool,
+    /// The raw sub-layer ordering entries, one per coded sub-layer
+    /// `i` in `start..=vps_max_sub_layers_minus1` where `start = 0`
+    /// when [`Self::vps_sub_layer_ordering_info_present_flag`] is set,
+    /// else `vps_max_sub_layers_minus1` (a single entry).
+    pub sub_layer_ordering_info: Vec<HevcSubLayerOrderingInfo>,
     /// `vps_max_dec_pic_buffering_minus1[vps_max_sub_layers_minus1]`
     /// (the highest sub-layer — the one DPB sizing uses, §7.4.3.1).
     pub vps_max_dec_pic_buffering_minus1: u32,
@@ -768,11 +1032,33 @@ pub struct HevcVps {
     pub vps_time_scale: u32,
     pub vps_poc_proportional_to_timing_flag: bool,
     pub vps_num_ticks_poc_diff_one_minus1: u32,
-    /// `(hrd_layer_set_idx[i], hrd_parameters(i))` — for entries with
-    /// `cprms_present_flag[i] == 0` the common-info fields are
+    /// One entry per coded `hrd_parameters(i)`. Entries with
+    /// `cprms_present_flag == false` carry common-info fields
     /// inherited from entry `i − 1` per §7.4.3.1.
-    pub hrd_parameters: Vec<(u32, HevcHrdParameters)>,
+    pub hrd_parameters: Vec<HevcVpsHrdEntry>,
     pub vps_extension_flag: bool,
+}
+
+/// One VPS timing-block HRD entry (§7.3.2.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HevcVpsHrdEntry {
+    pub hrd_layer_set_idx: u32,
+    /// `cprms_present_flag[i]`; inferred to 1 for `i == 0`
+    /// (§7.4.3.1). When false, [`Self::hrd`]'s common-info fields are
+    /// the inherited copies of the previous entry's.
+    pub cprms_present_flag: bool,
+    pub hrd: HevcHrdParameters,
+}
+
+/// One raw sub-layer ordering-info entry — the
+/// `max_dec_pic_buffering_minus1 / max_num_reorder_pics /
+/// max_latency_increase_plus1` triple coded per sub-layer in the VPS
+/// (§7.3.2.1) and SPS (§7.3.2.2.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HevcSubLayerOrderingInfo {
+    pub max_dec_pic_buffering_minus1: u32,
+    pub max_num_reorder_pics: u32,
+    pub max_latency_increase_plus1: u32,
 }
 
 /// Sequence parameter set (7.3.2.2).
@@ -795,6 +1081,12 @@ pub struct HevcSps {
     pub bit_depth_chroma_minus8: u8,
 
     pub log2_max_pic_order_cnt_lsb_minus4: u8,
+    pub sps_sub_layer_ordering_info_present_flag: bool,
+    /// The raw sub-layer ordering entries, one per coded sub-layer
+    /// `i` in `start..=sps_max_sub_layers_minus1` where `start = 0`
+    /// when [`Self::sps_sub_layer_ordering_info_present_flag`] is
+    /// set, else `sps_max_sub_layers_minus1` (a single entry).
+    pub sub_layer_ordering_info: Vec<HevcSubLayerOrderingInfo>,
     /// `sps_max_dec_pic_buffering_minus1[sps_max_sub_layers_minus1]`.
     pub sps_max_dec_pic_buffering_minus1: u32,
     pub sps_max_num_reorder_pics: u32,
@@ -836,10 +1128,16 @@ pub struct HevcSps {
     pub vui: Option<HevcVui>,
     /// §7.3.2.2.1 extension flags (all parse; the range extension's
     /// *content* also parses, SCC/multilayer/3D content does not).
+    /// `sps_extension_present_flag` is retained so an extension block
+    /// with all four flags zero still round-trips byte-exactly.
+    pub sps_extension_present_flag: bool,
     pub sps_range_extension_flag: bool,
     pub sps_multilayer_extension_flag: bool,
     pub sps_3d_extension_flag: bool,
     pub sps_scc_extension_flag: bool,
+    /// The raw `sps_extension_4bits` nibble (zero in conforming
+    /// streams of the current edition).
+    pub sps_extension_4bits: u8,
     /// `Some` when `sps_range_extension_flag == 1` (§7.3.2.2.2).
     pub range_extension: Option<HevcSpsRangeExtension>,
 }
@@ -955,11 +1253,17 @@ pub struct HevcPps {
     pub tiles: Option<HevcTiles>,
     /// `Some` when `pps_scaling_list_data_present_flag == 1`.
     pub scaling_list_data: Option<HevcScalingListData>,
-    /// §7.3.2.3.1 extension flags.
+    /// §7.3.2.3.1 extension flags. `pps_extension_present_flag` is
+    /// retained so an extension block with all four flags zero still
+    /// round-trips byte-exactly.
+    pub pps_extension_present_flag: bool,
     pub pps_range_extension_flag: bool,
     pub pps_multilayer_extension_flag: bool,
     pub pps_3d_extension_flag: bool,
     pub pps_scc_extension_flag: bool,
+    /// The raw `pps_extension_4bits` nibble (zero in conforming
+    /// streams of the current edition).
+    pub pps_extension_4bits: u8,
     /// `Some` when `pps_range_extension_flag == 1` (§7.3.2.3.2).
     pub range_extension: Option<HevcPpsRangeExtension>,
 }
@@ -1033,18 +1337,13 @@ fn parse_profile_tier_level(
         ptl.general_profile_compatibility_flags = r.u(32);
         // general_progressive_source_flag, general_interlaced_source_flag,
         // general_non_packed_constraint_flag, general_frame_only_constraint_flag,
-        // 43 + 1 = 44 reserved bits.
-        let _flags_top = r.u(4);
-        // The 43 reserved-zero bits + 1 inbld follow; their semantics
-        // depend on profile, but for parsing we just consume them.
-        let _flags_mid = r.u(32);
-        let _flags_bot = r.u(11);
-        let _general_inbld_or_reserved = r.u(1);
+        // then 43 profile-dependent constraint/reserved bits and the
+        // final inbld/reserved bit — 48 bits total, retained verbatim
+        // so the writer can reproduce them.
+        ptl.general_constraint_bits = r.u64(48);
     }
     ptl.general_level_idc = r.u(8) as u8;
 
-    // Per-sub-layer flags. We don't expose them, but we have to read
-    // them to keep our bit position correct.
     if max_num_sub_layers_minus1 > 0 {
         let mut sub_layer_profile_present = [false; 7];
         let mut sub_layer_level_present = [false; 7];
@@ -1052,28 +1351,88 @@ fn parse_profile_tier_level(
             sub_layer_profile_present[i] = r.u(1) != 0;
             sub_layer_level_present[i] = r.u(1) != 0;
         }
-        // 2*(8 - max_num_sub_layers_minus1) reserved-zero bits.
-        for _ in max_num_sub_layers_minus1..8 {
-            let _ = r.u(2);
-        }
+        // 2*(8 - max_num_sub_layers_minus1) reserved-zero bits —
+        // retained verbatim (they are zero in conforming streams).
+        let reserved_bits = 2 * (8 - max_num_sub_layers_minus1 as u32);
+        ptl.sub_layer_reserved_bits = r.u(reserved_bits) as u16;
         for i in 0..max_num_sub_layers_minus1 as usize {
+            let mut sl = HevcSubLayerPtl::default();
             if sub_layer_profile_present[i] {
-                let _profile_space = r.u(2);
-                let _tier_flag = r.u(1);
-                let _profile_idc = r.u(5);
-                let _compat = r.u(32);
-                // 4 source/constraint flags + 43 reserved + 1 inbld
-                let _ = r.u(4);
-                let _ = r.u(32);
-                let _ = r.u(11);
-                let _ = r.u(1);
+                sl.profile = Some(HevcSubLayerProfile {
+                    profile_space: r.u(2) as u8,
+                    tier_flag: r.u(1) != 0,
+                    profile_idc: r.u(5) as u8,
+                    profile_compatibility_flags: r.u(32),
+                    constraint_bits: r.u64(48),
+                });
             }
             if sub_layer_level_present[i] {
-                let _sub_level_idc = r.u(8);
+                sl.level_idc = Some(r.u(8) as u8);
             }
+            ptl.sub_layers.push(sl);
         }
     }
     Ok(ptl)
+}
+
+/// Emit a `profile_tier_level( 1, maxNumSubLayersMinus1 )` structure
+/// (§7.3.3) — the byte-exact inverse of the parser. The number of
+/// sub-layer entries in `ptl.sub_layers` must equal
+/// `max_num_sub_layers_minus1`.
+fn write_profile_tier_level(
+    w: &mut crate::bit_writer::BitWriter,
+    ptl: &HevcProfileTierLevel,
+    max_num_sub_layers_minus1: u8,
+) -> Result<(), BitstreamError> {
+    if ptl.sub_layers.len() != max_num_sub_layers_minus1 as usize {
+        return Err(BitstreamError::invalid(format!(
+            "profile_tier_level sub_layers entries ({}) != maxNumSubLayersMinus1 ({})",
+            ptl.sub_layers.len(),
+            max_num_sub_layers_minus1
+        )));
+    }
+    if ptl.general_constraint_bits >> 48 != 0 {
+        return Err(BitstreamError::invalid(
+            "profile_tier_level general_constraint_bits wider than 48 bits",
+        ));
+    }
+    w.write_bits(ptl.general_profile_space as u32, 2);
+    w.write_bit(u32::from(ptl.general_tier_flag));
+    w.write_bits(ptl.general_profile_idc as u32, 5);
+    w.write_bits(ptl.general_profile_compatibility_flags, 32);
+    w.write_bits_u64(ptl.general_constraint_bits, 48);
+    w.write_bits(ptl.general_level_idc as u32, 8);
+    if max_num_sub_layers_minus1 > 0 {
+        for sl in &ptl.sub_layers {
+            w.write_bit(u32::from(sl.profile.is_some()));
+            w.write_bit(u32::from(sl.level_idc.is_some()));
+        }
+        let reserved_bits = 2 * (8 - max_num_sub_layers_minus1 as u32);
+        if u32::from(ptl.sub_layer_reserved_bits) >> reserved_bits != 0 {
+            return Err(BitstreamError::invalid(
+                "profile_tier_level sub_layer_reserved_bits wider than the coded run",
+            ));
+        }
+        w.write_bits(ptl.sub_layer_reserved_bits as u32, reserved_bits);
+        for sl in &ptl.sub_layers {
+            if let Some(p) = &sl.profile {
+                if p.constraint_bits >> 48 != 0 {
+                    return Err(BitstreamError::invalid(
+                        "profile_tier_level sub-layer constraint_bits wider than 48 bits",
+                    ));
+                }
+                w.write_bits(p.profile_space as u32, 2);
+                w.write_bit(u32::from(p.tier_flag));
+                w.write_bits(p.profile_idc as u32, 5);
+                w.write_bits(p.profile_compatibility_flags, 32);
+                w.write_bits_u64(p.constraint_bits, 48);
+            }
+            if let Some(level) = sl.level_idc {
+                w.write_bits(level as u32, 8);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─────────────────────────── Parsers ─────────────────────────────────────────
@@ -1102,28 +1461,36 @@ pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
     vps.vps_max_layers_minus1 = r.u(6) as u8;
     vps.vps_max_sub_layers_minus1 = r.u(3) as u8;
     vps.vps_temporal_id_nesting_flag = r.u(1) != 0;
-    let _vps_reserved_0xffff_16bits = r.u(16);
+    vps.vps_reserved_0xffff_16bits = r.u(16) as u16;
     vps.profile_tier_level = parse_profile_tier_level(&mut r, true, vps.vps_max_sub_layers_minus1)?;
 
-    // Sub-layer ordering info — same shape as the SPS block: keep the
-    // highest sub-layer's entry (§7.4.3.1).
-    let ordering_info_present = r.u(1);
-    let start = if ordering_info_present != 0 {
+    // Sub-layer ordering info — same shape as the SPS block. All
+    // coded entries are retained; the scalar convenience fields keep
+    // the highest sub-layer's entry (the one DPB sizing uses,
+    // §7.4.3.1).
+    vps.vps_sub_layer_ordering_info_present_flag = r.u(1) != 0;
+    let start = if vps.vps_sub_layer_ordering_info_present_flag {
         0
     } else {
         vps.vps_max_sub_layers_minus1 as usize
     };
     for _ in start..=vps.vps_max_sub_layers_minus1 as usize {
-        vps.vps_max_dec_pic_buffering_minus1 = r.ue()?;
-        vps.vps_max_num_reorder_pics = r.ue()?;
-        vps.vps_max_latency_increase_plus1 = r.ue()?;
-    }
-    // §7.4.3.1 / §A.4.2: DPB size caps at 16 like the SPS field.
-    if vps.vps_max_dec_pic_buffering_minus1 > 15 {
-        return Err(BitstreamError::invalid(format!(
-            "VPS vps_max_dec_pic_buffering_minus1={} (MaxDpbSize caps at 16, §A.4.2)",
-            vps.vps_max_dec_pic_buffering_minus1
-        )));
+        let entry = HevcSubLayerOrderingInfo {
+            max_dec_pic_buffering_minus1: r.ue()?,
+            max_num_reorder_pics: r.ue()?,
+            max_latency_increase_plus1: r.ue()?,
+        };
+        // §7.4.3.1 / §A.4.2: DPB size caps at 16 for every sub-layer.
+        if entry.max_dec_pic_buffering_minus1 > 15 {
+            return Err(BitstreamError::invalid(format!(
+                "VPS vps_max_dec_pic_buffering_minus1={} (MaxDpbSize caps at 16, §A.4.2)",
+                entry.max_dec_pic_buffering_minus1
+            )));
+        }
+        vps.vps_max_dec_pic_buffering_minus1 = entry.max_dec_pic_buffering_minus1;
+        vps.vps_max_num_reorder_pics = entry.max_num_reorder_pics;
+        vps.vps_max_latency_increase_plus1 = entry.max_latency_increase_plus1;
+        vps.sub_layer_ordering_info.push(entry);
     }
 
     vps.vps_max_layer_id = r.u(6) as u8;
@@ -1172,10 +1539,14 @@ pub fn parse_vps_nal(nal: &[u8]) -> Result<HevcVps, BitstreamError> {
                     .hrd_parameters
                     .last()
                     .expect("i > 0 implies a previous entry")
-                    .1;
+                    .hrd;
                 parse_hrd_parameters_inner(&mut r, vps.vps_max_sub_layers_minus1, Some(prev))?
             };
-            vps.hrd_parameters.push((hrd_layer_set_idx, hrd));
+            vps.hrd_parameters.push(HevcVpsHrdEntry {
+                hrd_layer_set_idx,
+                cprms_present_flag: cprms_present,
+                hrd,
+            });
         }
     }
     vps.vps_extension_flag = r.u(1) != 0;
@@ -1237,34 +1608,37 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
     }
     sps.log2_max_pic_order_cnt_lsb_minus4 = log2_max_poc_lsb_minus4 as u8;
 
-    let sps_sub_layer_ordering_info_present_flag = r.u(1);
-    let start = if sps_sub_layer_ordering_info_present_flag != 0 {
+    sps.sps_sub_layer_ordering_info_present_flag = r.u(1) != 0;
+    let start = if sps.sps_sub_layer_ordering_info_present_flag {
         0
     } else {
         sps.sps_max_sub_layers_minus1 as usize
     };
     // For each sub-layer in [start, sps_max_sub_layers_minus1], read
-    // three ue(v) values. Keep only the [sps_max_sub_layers_minus1]
-    // entry (the highest layer — the one DPB sizing uses).
-    let mut last_max_dec = 0u32;
-    let mut last_max_reorder = 0u32;
-    let mut last_max_latency = 0u32;
+    // three ue(v) values. All coded entries are retained; the scalar
+    // convenience fields keep the [sps_max_sub_layers_minus1] entry
+    // (the highest layer — the one DPB sizing uses).
     for _ in start..=sps.sps_max_sub_layers_minus1 as usize {
-        last_max_dec = r.ue()?;
-        last_max_reorder = r.ue()?;
-        last_max_latency = r.ue()?;
+        let entry = HevcSubLayerOrderingInfo {
+            max_dec_pic_buffering_minus1: r.ue()?,
+            max_num_reorder_pics: r.ue()?,
+            max_latency_increase_plus1: r.ue()?,
+        };
+        // §7.4.3.2.1 bounds sps_max_dec_pic_buffering_minus1[i] by
+        // MaxDpbSize − 1, and A.4.2 caps MaxDpbSize at 16. Enforcing
+        // the cap here also bounds the st_ref_pic_set entry loops
+        // below.
+        if entry.max_dec_pic_buffering_minus1 > 15 {
+            return Err(BitstreamError::invalid(format!(
+                "SPS sps_max_dec_pic_buffering_minus1={} (MaxDpbSize caps at 16, §A.4.2)",
+                entry.max_dec_pic_buffering_minus1
+            )));
+        }
+        sps.sps_max_dec_pic_buffering_minus1 = entry.max_dec_pic_buffering_minus1;
+        sps.sps_max_num_reorder_pics = entry.max_num_reorder_pics;
+        sps.sps_max_latency_increase_plus1 = entry.max_latency_increase_plus1;
+        sps.sub_layer_ordering_info.push(entry);
     }
-    // §7.4.3.2.1 bounds sps_max_dec_pic_buffering_minus1 by
-    // MaxDpbSize − 1, and A.4.2 caps MaxDpbSize at 16. Enforcing the
-    // cap here also bounds the st_ref_pic_set entry loops below.
-    if last_max_dec > 15 {
-        return Err(BitstreamError::invalid(format!(
-            "SPS sps_max_dec_pic_buffering_minus1={last_max_dec} (MaxDpbSize caps at 16, §A.4.2)"
-        )));
-    }
-    sps.sps_max_dec_pic_buffering_minus1 = last_max_dec;
-    sps.sps_max_num_reorder_pics = last_max_reorder;
-    sps.sps_max_latency_increase_plus1 = last_max_latency;
 
     // Profile conformance (§A.3) requires the derived CtbLog2SizeY
     // (7-10/7-11: log2_min_luma_coding_block_size_minus3 + 3 +
@@ -1344,13 +1718,13 @@ pub fn parse_sps_nal(nal: &[u8]) -> Result<HevcSps, BitstreamError> {
     if vui_parameters_present_flag != 0 {
         sps.vui = Some(parse_vui_parameters(&mut r, sps.sps_max_sub_layers_minus1)?);
     }
-    let sps_extension_present_flag = r.u(1);
-    if sps_extension_present_flag != 0 {
+    sps.sps_extension_present_flag = r.u(1) != 0;
+    if sps.sps_extension_present_flag {
         sps.sps_range_extension_flag = r.u(1) != 0;
         sps.sps_multilayer_extension_flag = r.u(1) != 0;
         sps.sps_3d_extension_flag = r.u(1) != 0;
         sps.sps_scc_extension_flag = r.u(1) != 0;
-        let _sps_extension_4bits = r.u(4);
+        sps.sps_extension_4bits = r.u(4) as u8;
     }
     if sps.sps_range_extension_flag {
         sps.range_extension = Some(HevcSpsRangeExtension {
@@ -1460,13 +1834,13 @@ pub fn parse_pps_nal(nal: &[u8]) -> Result<HevcPps, BitstreamError> {
     pps.lists_modification_present_flag = r.u(1) != 0;
     pps.log2_parallel_merge_level_minus2 = r.ue()?;
     pps.slice_segment_header_extension_present_flag = r.u(1) != 0;
-    let pps_extension_present_flag = r.u(1);
-    if pps_extension_present_flag != 0 {
+    pps.pps_extension_present_flag = r.u(1) != 0;
+    if pps.pps_extension_present_flag {
         pps.pps_range_extension_flag = r.u(1) != 0;
         pps.pps_multilayer_extension_flag = r.u(1) != 0;
         pps.pps_3d_extension_flag = r.u(1) != 0;
         pps.pps_scc_extension_flag = r.u(1) != 0;
-        let _pps_extension_4bits = r.u(4);
+        pps.pps_extension_4bits = r.u(4) as u8;
     }
     if pps.pps_range_extension_flag {
         let mut ext = HevcPpsRangeExtension::default();
@@ -1499,6 +1873,856 @@ pub fn parse_pps_nal(nal: &[u8]) -> Result<HevcPps, BitstreamError> {
         ));
     }
     Ok(pps)
+}
+
+// ─────────────────────────── Writers ─────────────────────────────────────────
+
+/// Emit a `scaling_list_data()` structure (§7.3.4) — the byte-exact
+/// inverse of the parser. Explicit coefficient lists are re-encoded
+/// as `scaling_list_delta_coef` differences (the mod-256 arithmetic
+/// of the §7.3.4 reconstruction makes the −128..=127 residue unique,
+/// so re-encoding is exact).
+fn write_scaling_list_data(
+    w: &mut crate::bit_writer::BitWriter,
+    d: &HevcScalingListData,
+) -> Result<(), BitstreamError> {
+    for size_id in 0usize..4 {
+        let step = if size_id == 3 { 3 } else { 1 };
+        let mut matrix_id = 0usize;
+        while matrix_id < 6 {
+            let pred_mode = d.pred_mode_flag[size_id][matrix_id];
+            w.write_bit(u32::from(pred_mode));
+            if !pred_mode {
+                let delta = d.pred_matrix_id_delta[size_id][matrix_id];
+                let max = if size_id == 3 {
+                    matrix_id as u32 / 3
+                } else {
+                    matrix_id as u32
+                };
+                if delta > max {
+                    return Err(BitstreamError::invalid(format!(
+                        "scaling_list_pred_matrix_id_delta={delta} > {max} \
+                         (sizeId={size_id}, matrixId={matrix_id}, §7.4.5)"
+                    )));
+                }
+                w.write_ue(delta)?;
+            } else {
+                let coef_num = if size_id == 0 { 16 } else { 64 };
+                let mut next_coef: i32 = 8;
+                if size_id > 1 {
+                    let dc = d.dc_coef_minus8[size_id - 2][matrix_id];
+                    if !(-7..=247).contains(&dc) {
+                        return Err(BitstreamError::invalid(format!(
+                            "scaling_list_dc_coef_minus8={dc} out of -7..=247 (§7.4.5)"
+                        )));
+                    }
+                    w.write_se(dc)?;
+                    next_coef = dc + 8;
+                }
+                for i in 0..coef_num {
+                    let v = i32::from(match size_id {
+                        0 => d.list_4x4[matrix_id][i],
+                        1 => d.list_8x8[matrix_id][i],
+                        2 => d.list_16x16[matrix_id][i],
+                        _ => d.list_32x32[matrix_id][i],
+                    });
+                    // Unique −128..=127 residue of (v − next_coef) mod 256.
+                    let mut delta = (v - next_coef) % 256;
+                    if delta > 127 {
+                        delta -= 256;
+                    } else if delta < -128 {
+                        delta += 256;
+                    }
+                    w.write_se(delta)?;
+                    next_coef = v;
+                }
+            }
+            matrix_id += step;
+        }
+    }
+    Ok(())
+}
+
+/// Emit a `sub_layer_hrd_parameters()` schedule list (§E.2.3).
+fn write_sub_layer_hrd(
+    w: &mut crate::bit_writer::BitWriter,
+    entries: &[HevcCpbEntry],
+    sub_pic: bool,
+) -> Result<(), BitstreamError> {
+    for e in entries {
+        w.write_ue(e.bit_rate_value_minus1)?;
+        w.write_ue(e.cpb_size_value_minus1)?;
+        if sub_pic {
+            w.write_ue(e.cpb_size_du_value_minus1)?;
+            w.write_ue(e.bit_rate_du_value_minus1)?;
+        }
+        w.write_bit(u32::from(e.cbr_flag));
+    }
+    Ok(())
+}
+
+/// Emit an `hrd_parameters( commonInfPresentFlag,
+/// maxNumSubLayersMinus1 )` structure (§E.2.2) — the byte-exact
+/// inverse of the parser. With `common_inf_present == false` the
+/// common-info block is skipped entirely (the VPS
+/// `cprms_present_flag == 0` case; the fields are then §7.4.3.1
+/// inheritance copies and are not coded).
+fn write_hrd_parameters(
+    w: &mut crate::bit_writer::BitWriter,
+    hrd: &HevcHrdParameters,
+    common_inf_present: bool,
+    max_num_sub_layers_minus1: u8,
+) -> Result<(), BitstreamError> {
+    if hrd.sub_layers.len() != max_num_sub_layers_minus1 as usize + 1 {
+        return Err(BitstreamError::invalid(format!(
+            "hrd_parameters sub_layers entries ({}) != maxNumSubLayersMinus1 + 1 ({})",
+            hrd.sub_layers.len(),
+            max_num_sub_layers_minus1 as usize + 1
+        )));
+    }
+    if common_inf_present {
+        w.write_bit(u32::from(hrd.nal_hrd_parameters_present_flag));
+        w.write_bit(u32::from(hrd.vcl_hrd_parameters_present_flag));
+        if hrd.nal_hrd_parameters_present_flag || hrd.vcl_hrd_parameters_present_flag {
+            w.write_bit(u32::from(hrd.sub_pic_hrd_params_present_flag));
+            if hrd.sub_pic_hrd_params_present_flag {
+                w.write_bits(hrd.tick_divisor_minus2 as u32, 8);
+                w.write_bits(hrd.du_cpb_removal_delay_increment_length_minus1 as u32, 5);
+                w.write_bit(u32::from(hrd.sub_pic_cpb_params_in_pic_timing_sei_flag));
+                w.write_bits(hrd.dpb_output_delay_du_length_minus1 as u32, 5);
+            }
+            w.write_bits(hrd.bit_rate_scale as u32, 4);
+            w.write_bits(hrd.cpb_size_scale as u32, 4);
+            if hrd.sub_pic_hrd_params_present_flag {
+                w.write_bits(hrd.cpb_size_du_scale as u32, 4);
+            }
+            w.write_bits(hrd.initial_cpb_removal_delay_length_minus1 as u32, 5);
+            w.write_bits(hrd.au_cpb_removal_delay_length_minus1 as u32, 5);
+            w.write_bits(hrd.dpb_output_delay_length_minus1 as u32, 5);
+        }
+    }
+    for sl in &hrd.sub_layers {
+        w.write_bit(u32::from(sl.fixed_pic_rate_general_flag));
+        if sl.fixed_pic_rate_general_flag {
+            // fixed_pic_rate_within_cvs_flag is inferred equal (§E.3.2).
+            if !sl.fixed_pic_rate_within_cvs_flag {
+                return Err(BitstreamError::invalid(
+                    "hrd_parameters fixed_pic_rate_within_cvs_flag must be set when \
+                     fixed_pic_rate_general_flag is (inference, §E.3.2)",
+                ));
+            }
+        } else {
+            w.write_bit(u32::from(sl.fixed_pic_rate_within_cvs_flag));
+        }
+        if sl.fixed_pic_rate_within_cvs_flag {
+            let Some(elemental) = sl.elemental_duration_in_tc_minus1 else {
+                return Err(BitstreamError::invalid(
+                    "hrd_parameters elemental_duration_in_tc_minus1 required when \
+                     fixed_pic_rate_within_cvs_flag is set (§E.2.2)",
+                ));
+            };
+            if sl.low_delay_hrd_flag {
+                return Err(BitstreamError::invalid(
+                    "hrd_parameters low_delay_hrd_flag is not coded (and stays 0) when \
+                     fixed_pic_rate_within_cvs_flag is set (§E.2.2)",
+                ));
+            }
+            w.write_ue(elemental)?;
+        } else {
+            if sl.elemental_duration_in_tc_minus1.is_some() {
+                return Err(BitstreamError::invalid(
+                    "hrd_parameters elemental_duration_in_tc_minus1 only coded when \
+                     fixed_pic_rate_within_cvs_flag is set (§E.2.2)",
+                ));
+            }
+            w.write_bit(u32::from(sl.low_delay_hrd_flag));
+        }
+        if !sl.low_delay_hrd_flag {
+            if sl.cpb_cnt_minus1 > 31 {
+                return Err(BitstreamError::invalid(format!(
+                    "hrd_parameters cpb_cnt_minus1={} (must be 0..=31, §E.3.2)",
+                    sl.cpb_cnt_minus1
+                )));
+            }
+            w.write_ue(sl.cpb_cnt_minus1)?;
+        } else if sl.cpb_cnt_minus1 != 0 {
+            return Err(BitstreamError::invalid(
+                "hrd_parameters cpb_cnt_minus1 is inferred 0 when low_delay_hrd_flag \
+                 is set (§E.3.2)",
+            ));
+        }
+        let cpb_cnt = sl.cpb_cnt_minus1 as usize + 1;
+        if hrd.nal_hrd_parameters_present_flag {
+            if sl.nal_cpb.len() != cpb_cnt {
+                return Err(BitstreamError::invalid(format!(
+                    "hrd_parameters NAL CPB entries ({}) != cpb_cnt_minus1 + 1 ({cpb_cnt})",
+                    sl.nal_cpb.len()
+                )));
+            }
+            write_sub_layer_hrd(w, &sl.nal_cpb, hrd.sub_pic_hrd_params_present_flag)?;
+        } else if !sl.nal_cpb.is_empty() {
+            return Err(BitstreamError::invalid(
+                "hrd_parameters NAL CPB entries present without \
+                 nal_hrd_parameters_present_flag",
+            ));
+        }
+        if hrd.vcl_hrd_parameters_present_flag {
+            if sl.vcl_cpb.len() != cpb_cnt {
+                return Err(BitstreamError::invalid(format!(
+                    "hrd_parameters VCL CPB entries ({}) != cpb_cnt_minus1 + 1 ({cpb_cnt})",
+                    sl.vcl_cpb.len()
+                )));
+            }
+            write_sub_layer_hrd(w, &sl.vcl_cpb, hrd.sub_pic_hrd_params_present_flag)?;
+        } else if !sl.vcl_cpb.is_empty() {
+            return Err(BitstreamError::invalid(
+                "hrd_parameters VCL CPB entries present without \
+                 vcl_hrd_parameters_present_flag",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Emit a `vui_parameters()` structure (§E.2.1) — the byte-exact
+/// inverse of the parser. Gated fields are emitted iff their gate
+/// flag / `Option` is set.
+fn write_vui_parameters(
+    w: &mut crate::bit_writer::BitWriter,
+    vui: &HevcVui,
+    max_num_sub_layers_minus1: u8,
+) -> Result<(), BitstreamError> {
+    w.write_bit(u32::from(vui.aspect_ratio_info_present_flag));
+    if vui.aspect_ratio_info_present_flag {
+        w.write_bits(vui.aspect_ratio_idc as u32, 8);
+        if vui.aspect_ratio_idc == HEVC_EXTENDED_SAR {
+            w.write_bits(vui.sar_width as u32, 16);
+            w.write_bits(vui.sar_height as u32, 16);
+        }
+    }
+    w.write_bit(u32::from(vui.overscan_info_present_flag));
+    if vui.overscan_info_present_flag {
+        w.write_bit(u32::from(vui.overscan_appropriate_flag));
+    }
+    w.write_bit(u32::from(vui.video_signal_type_present_flag));
+    if vui.video_signal_type_present_flag {
+        w.write_bits(vui.video_format as u32, 3);
+        w.write_bit(u32::from(vui.video_full_range_flag));
+        w.write_bit(u32::from(vui.colour_description_present_flag));
+        if vui.colour_description_present_flag {
+            w.write_bits(vui.colour_primaries as u32, 8);
+            w.write_bits(vui.transfer_characteristics as u32, 8);
+            w.write_bits(vui.matrix_coeffs as u32, 8);
+        }
+    }
+    w.write_bit(u32::from(vui.chroma_loc_info_present_flag));
+    if vui.chroma_loc_info_present_flag {
+        w.write_ue(vui.chroma_sample_loc_type_top_field)?;
+        w.write_ue(vui.chroma_sample_loc_type_bottom_field)?;
+    }
+    w.write_bit(u32::from(vui.neutral_chroma_indication_flag));
+    w.write_bit(u32::from(vui.field_seq_flag));
+    w.write_bit(u32::from(vui.frame_field_info_present_flag));
+    w.write_bit(u32::from(vui.default_display_window.is_some()));
+    if let Some(win) = &vui.default_display_window {
+        w.write_ue(win.left)?;
+        w.write_ue(win.right)?;
+        w.write_ue(win.top)?;
+        w.write_ue(win.bottom)?;
+    }
+    w.write_bit(u32::from(vui.vui_timing_info_present_flag));
+    if vui.vui_timing_info_present_flag {
+        w.write_bits(vui.vui_num_units_in_tick, 32);
+        w.write_bits(vui.vui_time_scale, 32);
+        w.write_bit(u32::from(vui.vui_poc_proportional_to_timing_flag));
+        if vui.vui_poc_proportional_to_timing_flag {
+            w.write_ue(vui.vui_num_ticks_poc_diff_one_minus1)?;
+        }
+        w.write_bit(u32::from(vui.hrd_parameters.is_some()));
+        if let Some(hrd) = &vui.hrd_parameters {
+            write_hrd_parameters(w, hrd, true, max_num_sub_layers_minus1)?;
+        }
+    } else if vui.hrd_parameters.is_some() {
+        return Err(BitstreamError::invalid(
+            "VUI hrd_parameters can only be coded inside the timing-info block (§E.2.1)",
+        ));
+    }
+    w.write_bit(u32::from(vui.bitstream_restriction_flag));
+    if vui.bitstream_restriction_flag {
+        w.write_bit(u32::from(vui.tiles_fixed_structure_flag));
+        w.write_bit(u32::from(vui.motion_vectors_over_pic_boundaries_flag));
+        w.write_bit(u32::from(vui.restricted_ref_pic_lists_flag));
+        w.write_ue(vui.min_spatial_segmentation_idc)?;
+        w.write_ue(vui.max_bytes_per_pic_denom)?;
+        w.write_ue(vui.max_bits_per_min_cu_denom)?;
+        w.write_ue(vui.log2_max_mv_length_horizontal)?;
+        w.write_ue(vui.log2_max_mv_length_vertical)?;
+    }
+    Ok(())
+}
+
+/// Shared writer for the SPS/VPS sub-layer ordering-info block.
+fn write_sub_layer_ordering_info(
+    w: &mut crate::bit_writer::BitWriter,
+    present_flag: bool,
+    entries: &[HevcSubLayerOrderingInfo],
+    max_sub_layers_minus1: u8,
+    what: &str,
+) -> Result<(), BitstreamError> {
+    w.write_bit(u32::from(present_flag));
+    let expected = if present_flag {
+        max_sub_layers_minus1 as usize + 1
+    } else {
+        1
+    };
+    if entries.len() != expected {
+        return Err(BitstreamError::invalid(format!(
+            "{what} sub_layer_ordering_info entries ({}) != expected coded count ({expected})",
+            entries.len()
+        )));
+    }
+    for e in entries {
+        if e.max_dec_pic_buffering_minus1 > 15 {
+            return Err(BitstreamError::invalid(format!(
+                "{what} max_dec_pic_buffering_minus1={} (MaxDpbSize caps at 16, §A.4.2)",
+                e.max_dec_pic_buffering_minus1
+            )));
+        }
+        w.write_ue(e.max_dec_pic_buffering_minus1)?;
+        w.write_ue(e.max_num_reorder_pics)?;
+        w.write_ue(e.max_latency_increase_plus1)?;
+    }
+    Ok(())
+}
+
+/// Emit an SPS RBSP (§7.3.2.2.1 `seq_parameter_set_rbsp()` including
+/// `rbsp_trailing_bits()`) — the byte-exact inverse of
+/// [`parse_sps_nal`]'s RBSP walk for every input that parser accepts.
+///
+/// Validation mirrors the parser's own guards
+/// (`log2_max_pic_order_cnt_lsb_minus4 ≤ 12`, `CtbLog2SizeY ∈ 4..=6`,
+/// DPB / RPS / long-term counts) plus structural consistency checks
+/// on the gated `Option` blocks. Multilayer / 3D / SCC extensions and
+/// a non-zero `sps_extension_4bits` (whose trailing
+/// `sps_extension_data_flag` bits the parser does not retain) are
+/// refused as [`BitstreamError::Unsupported`].
+pub fn write_sps(sps: &HevcSps) -> Result<Vec<u8>, BitstreamError> {
+    if sps.sps_multilayer_extension_flag || sps.sps_3d_extension_flag || sps.sps_scc_extension_flag
+    {
+        return Err(BitstreamError::unsupported(
+            "HEVC SPS multilayer/3D/SCC extension payloads not supported",
+        ));
+    }
+    if sps.sps_extension_4bits != 0 {
+        return Err(BitstreamError::unsupported(
+            "HEVC SPS sps_extension_4bits != 0 (unretained sps_extension_data_flag bits)",
+        ));
+    }
+    if sps.sps_max_sub_layers_minus1 > 6 {
+        return Err(BitstreamError::invalid(
+            "SPS sps_max_sub_layers_minus1 must be 0..=6 (§7.4.3.2.1)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_bits(sps.sps_video_parameter_set_id as u32, 4);
+    w.write_bits(sps.sps_max_sub_layers_minus1 as u32, 3);
+    w.write_bit(u32::from(sps.sps_temporal_id_nesting_flag));
+    write_profile_tier_level(
+        &mut w,
+        &sps.profile_tier_level,
+        sps.sps_max_sub_layers_minus1,
+    )?;
+    w.write_ue(sps.sps_seq_parameter_set_id as u32)?;
+    w.write_ue(sps.chroma_format_idc as u32)?;
+    if sps.chroma_format_idc == 3 {
+        w.write_bit(u32::from(sps.separate_colour_plane_flag));
+    } else if sps.separate_colour_plane_flag {
+        return Err(BitstreamError::invalid(
+            "SPS separate_colour_plane_flag only coded for chroma_format_idc == 3 (§7.3.2.2.1)",
+        ));
+    }
+    w.write_ue(sps.pic_width_in_luma_samples)?;
+    w.write_ue(sps.pic_height_in_luma_samples)?;
+    w.write_bit(u32::from(sps.conformance_window.is_some()));
+    if let Some(c) = &sps.conformance_window {
+        w.write_ue(c.left)?;
+        w.write_ue(c.right)?;
+        w.write_ue(c.top)?;
+        w.write_ue(c.bottom)?;
+    }
+    w.write_ue(sps.bit_depth_luma_minus8 as u32)?;
+    w.write_ue(sps.bit_depth_chroma_minus8 as u32)?;
+    if sps.log2_max_pic_order_cnt_lsb_minus4 > 12 {
+        return Err(BitstreamError::invalid(
+            "SPS log2_max_pic_order_cnt_lsb_minus4 must be 0..=12 (§7.4.3.2.1)",
+        ));
+    }
+    w.write_ue(sps.log2_max_pic_order_cnt_lsb_minus4 as u32)?;
+    write_sub_layer_ordering_info(
+        &mut w,
+        sps.sps_sub_layer_ordering_info_present_flag,
+        &sps.sub_layer_ordering_info,
+        sps.sps_max_sub_layers_minus1,
+        "SPS",
+    )?;
+    let ctb_log2 = sps.log2_min_luma_coding_block_size_minus3 as u64
+        + 3
+        + sps.log2_diff_max_min_luma_coding_block_size as u64;
+    if !(4..=6).contains(&ctb_log2) {
+        return Err(BitstreamError::invalid(format!(
+            "SPS CtbLog2SizeY={ctb_log2} (must be 4..=6, §A.3 profile conformance)"
+        )));
+    }
+    w.write_ue(sps.log2_min_luma_coding_block_size_minus3 as u32)?;
+    w.write_ue(sps.log2_diff_max_min_luma_coding_block_size as u32)?;
+    w.write_ue(sps.log2_min_luma_transform_block_size_minus2 as u32)?;
+    w.write_ue(sps.log2_diff_max_min_luma_transform_block_size as u32)?;
+    w.write_ue(sps.max_transform_hierarchy_depth_inter as u32)?;
+    w.write_ue(sps.max_transform_hierarchy_depth_intra as u32)?;
+    w.write_bit(u32::from(sps.scaling_list_enabled_flag));
+    if sps.scaling_list_enabled_flag {
+        w.write_bit(u32::from(sps.scaling_list_data.is_some()));
+        if let Some(d) = &sps.scaling_list_data {
+            write_scaling_list_data(&mut w, d)?;
+        }
+    } else if sps.scaling_list_data.is_some() {
+        return Err(BitstreamError::invalid(
+            "SPS scaling_list_data requires scaling_list_enabled_flag (§7.3.2.2.1)",
+        ));
+    }
+    w.write_bit(u32::from(sps.amp_enabled_flag));
+    w.write_bit(u32::from(sps.sample_adaptive_offset_enabled_flag));
+    w.write_bit(u32::from(sps.pcm_enabled_flag));
+    if sps.pcm_enabled_flag {
+        w.write_bits(sps.pcm_sample_bit_depth_luma_minus1 as u32, 4);
+        w.write_bits(sps.pcm_sample_bit_depth_chroma_minus1 as u32, 4);
+        w.write_ue(sps.log2_min_pcm_luma_coding_block_size_minus3 as u32)?;
+        w.write_ue(sps.log2_diff_max_min_pcm_luma_coding_block_size as u32)?;
+        w.write_bit(u32::from(sps.pcm_loop_filter_disabled_flag));
+    }
+    if sps.num_short_term_ref_pic_sets as usize != sps.short_term_rps.len() {
+        return Err(BitstreamError::invalid(format!(
+            "SPS num_short_term_ref_pic_sets ({}) != short_term_rps entries ({})",
+            sps.num_short_term_ref_pic_sets,
+            sps.short_term_rps.len()
+        )));
+    }
+    if sps.short_term_rps.len() > 64 {
+        return Err(BitstreamError::invalid(
+            "SPS num_short_term_ref_pic_sets must be 0..=64 (§7.4.3.2.1)",
+        ));
+    }
+    w.write_ue(sps.short_term_rps.len() as u32)?;
+    for (i, rps) in sps.short_term_rps.iter().enumerate() {
+        write_st_ref_pic_set(
+            &mut w,
+            i,
+            rps,
+            &sps.short_term_rps[..i],
+            sps.sps_max_dec_pic_buffering_minus1,
+        )?;
+    }
+    w.write_bit(u32::from(sps.long_term_ref_pics_present_flag));
+    if sps.long_term_ref_pics_present_flag {
+        if sps.num_long_term_ref_pics_sps as usize != sps.long_term_ref_pics.len() {
+            return Err(BitstreamError::invalid(format!(
+                "SPS num_long_term_ref_pics_sps ({}) != long_term_ref_pics entries ({})",
+                sps.num_long_term_ref_pics_sps,
+                sps.long_term_ref_pics.len()
+            )));
+        }
+        if sps.long_term_ref_pics.len() > 32 {
+            return Err(BitstreamError::invalid(
+                "SPS num_long_term_ref_pics_sps must be 0..=32 (§7.4.3.2.1)",
+            ));
+        }
+        w.write_ue(sps.long_term_ref_pics.len() as u32)?;
+        let poc_bits = sps.log2_max_pic_order_cnt_lsb_minus4 as u32 + 4;
+        for &(lsb, used) in &sps.long_term_ref_pics {
+            if u64::from(lsb) >> poc_bits != 0 {
+                return Err(BitstreamError::invalid(format!(
+                    "SPS lt_ref_pic_poc_lsb_sps={lsb} does not fit u({poc_bits})"
+                )));
+            }
+            w.write_bits(lsb, poc_bits);
+            w.write_bit(u32::from(used));
+        }
+    } else if !sps.long_term_ref_pics.is_empty() {
+        return Err(BitstreamError::invalid(
+            "SPS long_term_ref_pics require long_term_ref_pics_present_flag (§7.3.2.2.1)",
+        ));
+    }
+    w.write_bit(u32::from(sps.sps_temporal_mvp_enabled_flag));
+    w.write_bit(u32::from(sps.strong_intra_smoothing_enabled_flag));
+    w.write_bit(u32::from(sps.vui.is_some()));
+    if let Some(vui) = &sps.vui {
+        write_vui_parameters(&mut w, vui, sps.sps_max_sub_layers_minus1)?;
+    }
+    if !sps.sps_extension_present_flag
+        && (sps.sps_range_extension_flag || sps.range_extension.is_some())
+    {
+        return Err(BitstreamError::invalid(
+            "SPS range extension requires sps_extension_present_flag (§7.3.2.2.1)",
+        ));
+    }
+    w.write_bit(u32::from(sps.sps_extension_present_flag));
+    if sps.sps_extension_present_flag {
+        w.write_bit(u32::from(sps.sps_range_extension_flag));
+        w.write_bit(0); // sps_multilayer_extension_flag (refused above)
+        w.write_bit(0); // sps_3d_extension_flag
+        w.write_bit(0); // sps_scc_extension_flag
+        w.write_bits(0, 4); // sps_extension_4bits (refused above when non-zero)
+    }
+    if sps.sps_range_extension_flag {
+        let Some(ext) = &sps.range_extension else {
+            return Err(BitstreamError::invalid(
+                "SPS sps_range_extension_flag set without range_extension content",
+            ));
+        };
+        w.write_bit(u32::from(ext.transform_skip_rotation_enabled_flag));
+        w.write_bit(u32::from(ext.transform_skip_context_enabled_flag));
+        w.write_bit(u32::from(ext.implicit_rdpcm_enabled_flag));
+        w.write_bit(u32::from(ext.explicit_rdpcm_enabled_flag));
+        w.write_bit(u32::from(ext.extended_precision_processing_flag));
+        w.write_bit(u32::from(ext.intra_smoothing_disabled_flag));
+        w.write_bit(u32::from(ext.high_precision_offsets_enabled_flag));
+        w.write_bit(u32::from(ext.persistent_rice_adaptation_enabled_flag));
+        w.write_bit(u32::from(ext.cabac_bypass_alignment_enabled_flag));
+    } else if sps.range_extension.is_some() {
+        return Err(BitstreamError::invalid(
+            "SPS range_extension content without sps_range_extension_flag",
+        ));
+    }
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete SPS NAL: canonical two-byte NAL header
+/// (`forbidden_zero = 0`, type 33, `nuh_layer_id = 0`,
+/// `nuh_temporal_id_plus1 = 1`) + emulation-prevention-encoded RBSP.
+pub fn write_sps_nal(sps: &HevcSps) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_sps(sps)?;
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(NAL_TYPE_SPS << 1); // 0x42
+    out.push(0x01);
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
+}
+
+/// Emit a PPS RBSP (§7.3.2.3.1 `pic_parameter_set_rbsp()` including
+/// `rbsp_trailing_bits()`) — the byte-exact inverse of
+/// [`parse_pps_nal`]'s RBSP walk for every input that parser accepts.
+///
+/// Multilayer / 3D / SCC extensions and a non-zero
+/// `pps_extension_4bits` are refused as
+/// [`BitstreamError::Unsupported`], matching the parser envelope.
+pub fn write_pps(pps: &HevcPps) -> Result<Vec<u8>, BitstreamError> {
+    if pps.pps_multilayer_extension_flag || pps.pps_3d_extension_flag || pps.pps_scc_extension_flag
+    {
+        return Err(BitstreamError::unsupported(
+            "HEVC PPS multilayer/3D/SCC extension payloads not supported",
+        ));
+    }
+    if pps.pps_extension_4bits != 0 {
+        return Err(BitstreamError::unsupported(
+            "HEVC PPS pps_extension_4bits != 0 (unretained pps_extension_data_flag bits)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_ue(pps.pps_pic_parameter_set_id as u32)?;
+    w.write_ue(pps.pps_seq_parameter_set_id as u32)?;
+    w.write_bit(u32::from(pps.dependent_slice_segments_enabled_flag));
+    w.write_bit(u32::from(pps.output_flag_present_flag));
+    w.write_bits(pps.num_extra_slice_header_bits as u32, 3);
+    w.write_bit(u32::from(pps.sign_data_hiding_enabled_flag));
+    w.write_bit(u32::from(pps.cabac_init_present_flag));
+    w.write_ue(pps.num_ref_idx_l0_default_active_minus1 as u32)?;
+    w.write_ue(pps.num_ref_idx_l1_default_active_minus1 as u32)?;
+    w.write_se(pps.init_qp_minus26)?;
+    w.write_bit(u32::from(pps.constrained_intra_pred_flag));
+    w.write_bit(u32::from(pps.transform_skip_enabled_flag));
+    w.write_bit(u32::from(pps.cu_qp_delta_enabled_flag));
+    if pps.cu_qp_delta_enabled_flag {
+        w.write_ue(pps.diff_cu_qp_delta_depth)?;
+    }
+    w.write_se(pps.pps_cb_qp_offset)?;
+    w.write_se(pps.pps_cr_qp_offset)?;
+    w.write_bit(u32::from(pps.pps_slice_chroma_qp_offsets_present_flag));
+    w.write_bit(u32::from(pps.weighted_pred_flag));
+    w.write_bit(u32::from(pps.weighted_bipred_flag));
+    w.write_bit(u32::from(pps.transquant_bypass_enabled_flag));
+    w.write_bit(u32::from(pps.tiles_enabled_flag));
+    w.write_bit(u32::from(pps.entropy_coding_sync_enabled_flag));
+    if pps.tiles_enabled_flag {
+        let Some(tiles) = &pps.tiles else {
+            return Err(BitstreamError::invalid(
+                "PPS tiles_enabled_flag set without tile grid content",
+            ));
+        };
+        w.write_ue(tiles.num_tile_columns_minus1)?;
+        w.write_ue(tiles.num_tile_rows_minus1)?;
+        w.write_bit(u32::from(tiles.uniform_spacing_flag));
+        if !tiles.uniform_spacing_flag {
+            if tiles.column_widths_minus1.len() != tiles.num_tile_columns_minus1 as usize
+                || tiles.row_heights_minus1.len() != tiles.num_tile_rows_minus1 as usize
+            {
+                return Err(BitstreamError::invalid(
+                    "PPS explicit tile column/row lists must match the declared counts \
+                     (§7.3.2.3.1)",
+                ));
+            }
+            for &cw in &tiles.column_widths_minus1 {
+                w.write_ue(cw)?;
+            }
+            for &rh in &tiles.row_heights_minus1 {
+                w.write_ue(rh)?;
+            }
+        } else if !tiles.column_widths_minus1.is_empty() || !tiles.row_heights_minus1.is_empty() {
+            return Err(BitstreamError::invalid(
+                "PPS uniform_spacing_flag with explicit column/row lists (§7.3.2.3.1)",
+            ));
+        }
+        w.write_bit(u32::from(tiles.loop_filter_across_tiles_enabled_flag));
+    } else if pps.tiles.is_some() {
+        return Err(BitstreamError::invalid(
+            "PPS tile grid content without tiles_enabled_flag",
+        ));
+    }
+    w.write_bit(u32::from(pps.pps_loop_filter_across_slices_enabled_flag));
+    w.write_bit(u32::from(pps.deblocking_filter_control_present_flag));
+    if pps.deblocking_filter_control_present_flag {
+        w.write_bit(u32::from(pps.deblocking_filter_override_enabled_flag));
+        w.write_bit(u32::from(pps.pps_deblocking_filter_disabled_flag));
+        if !pps.pps_deblocking_filter_disabled_flag {
+            w.write_se(pps.pps_beta_offset_div2)?;
+            w.write_se(pps.pps_tc_offset_div2)?;
+        }
+    }
+    w.write_bit(u32::from(pps.scaling_list_data.is_some()));
+    if let Some(d) = &pps.scaling_list_data {
+        write_scaling_list_data(&mut w, d)?;
+    }
+    w.write_bit(u32::from(pps.lists_modification_present_flag));
+    w.write_ue(pps.log2_parallel_merge_level_minus2)?;
+    w.write_bit(u32::from(pps.slice_segment_header_extension_present_flag));
+    if !pps.pps_extension_present_flag
+        && (pps.pps_range_extension_flag || pps.range_extension.is_some())
+    {
+        return Err(BitstreamError::invalid(
+            "PPS range extension requires pps_extension_present_flag (§7.3.2.3.1)",
+        ));
+    }
+    w.write_bit(u32::from(pps.pps_extension_present_flag));
+    if pps.pps_extension_present_flag {
+        w.write_bit(u32::from(pps.pps_range_extension_flag));
+        w.write_bit(0); // pps_multilayer_extension_flag (refused above)
+        w.write_bit(0); // pps_3d_extension_flag
+        w.write_bit(0); // pps_scc_extension_flag
+        w.write_bits(0, 4); // pps_extension_4bits (refused above when non-zero)
+    }
+    if pps.pps_range_extension_flag {
+        let Some(ext) = &pps.range_extension else {
+            return Err(BitstreamError::invalid(
+                "PPS pps_range_extension_flag set without range_extension content",
+            ));
+        };
+        if pps.transform_skip_enabled_flag {
+            w.write_ue(ext.log2_max_transform_skip_block_size_minus2)?;
+        } else if ext.log2_max_transform_skip_block_size_minus2 != 0 {
+            return Err(BitstreamError::invalid(
+                "PPS log2_max_transform_skip_block_size_minus2 only coded when \
+                 transform_skip_enabled_flag is set (§7.3.2.3.2)",
+            ));
+        }
+        w.write_bit(u32::from(ext.cross_component_prediction_enabled_flag));
+        w.write_bit(u32::from(ext.chroma_qp_offset_list_enabled_flag));
+        if ext.chroma_qp_offset_list_enabled_flag {
+            if ext.chroma_qp_offset_list.is_empty() || ext.chroma_qp_offset_list.len() > 6 {
+                return Err(BitstreamError::invalid(
+                    "PPS chroma_qp_offset_list must have 1..=6 pairs (§7.4.3.3.2)",
+                ));
+            }
+            w.write_ue(ext.diff_cu_chroma_qp_offset_depth)?;
+            w.write_ue(ext.chroma_qp_offset_list.len() as u32 - 1)?;
+            for &(cb, cr) in &ext.chroma_qp_offset_list {
+                w.write_se(cb)?;
+                w.write_se(cr)?;
+            }
+        } else if !ext.chroma_qp_offset_list.is_empty() {
+            return Err(BitstreamError::invalid(
+                "PPS chroma_qp_offset_list without chroma_qp_offset_list_enabled_flag",
+            ));
+        }
+        w.write_ue(ext.log2_sao_offset_scale_luma)?;
+        w.write_ue(ext.log2_sao_offset_scale_chroma)?;
+    } else if pps.range_extension.is_some() {
+        return Err(BitstreamError::invalid(
+            "PPS range_extension content without pps_range_extension_flag",
+        ));
+    }
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete PPS NAL: canonical two-byte NAL header (type 34,
+/// layer 0, TID 0) + emulation-prevention-encoded RBSP.
+pub fn write_pps_nal(pps: &HevcPps) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_pps(pps)?;
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(NAL_TYPE_PPS << 1); // 0x44
+    out.push(0x01);
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
+}
+
+/// Emit a VPS RBSP (§7.3.2.1 `video_parameter_set_rbsp()` including
+/// `rbsp_trailing_bits()`) — the byte-exact inverse of
+/// [`parse_vps_nal`]'s RBSP walk for every input that parser accepts,
+/// except `vps_extension_flag == 1` (the Annex-F extension payload
+/// bits are not retained), which is refused as
+/// [`BitstreamError::Unsupported`].
+pub fn write_vps(vps: &HevcVps) -> Result<Vec<u8>, BitstreamError> {
+    if vps.vps_extension_flag {
+        return Err(BitstreamError::unsupported(
+            "HEVC VPS vps_extension_flag == 1 (unretained Annex-F extension payload)",
+        ));
+    }
+    if vps.vps_max_sub_layers_minus1 > 6 {
+        return Err(BitstreamError::invalid(
+            "VPS vps_max_sub_layers_minus1 must be 0..=6 (§7.4.3.1)",
+        ));
+    }
+    if vps.vps_num_layer_sets_minus1 > 1023 {
+        return Err(BitstreamError::invalid(
+            "VPS vps_num_layer_sets_minus1 must be 0..=1023 (§7.4.3.1)",
+        ));
+    }
+    let mut w = crate::bit_writer::BitWriter::new();
+    w.write_bits(vps.vps_video_parameter_set_id as u32, 4);
+    w.write_bit(u32::from(vps.vps_base_layer_internal_flag));
+    w.write_bit(u32::from(vps.vps_base_layer_available_flag));
+    w.write_bits(vps.vps_max_layers_minus1 as u32, 6);
+    w.write_bits(vps.vps_max_sub_layers_minus1 as u32, 3);
+    w.write_bit(u32::from(vps.vps_temporal_id_nesting_flag));
+    w.write_bits(vps.vps_reserved_0xffff_16bits as u32, 16);
+    write_profile_tier_level(
+        &mut w,
+        &vps.profile_tier_level,
+        vps.vps_max_sub_layers_minus1,
+    )?;
+    write_sub_layer_ordering_info(
+        &mut w,
+        vps.vps_sub_layer_ordering_info_present_flag,
+        &vps.sub_layer_ordering_info,
+        vps.vps_max_sub_layers_minus1,
+        "VPS",
+    )?;
+    if vps.vps_max_layer_id > 63 {
+        return Err(BitstreamError::invalid(
+            "VPS vps_max_layer_id does not fit u(6)",
+        ));
+    }
+    w.write_bits(vps.vps_max_layer_id as u32, 6);
+    if vps.layer_id_included.len() != vps.vps_num_layer_sets_minus1 as usize {
+        return Err(BitstreamError::invalid(format!(
+            "VPS layer_id_included entries ({}) != vps_num_layer_sets_minus1 ({})",
+            vps.layer_id_included.len(),
+            vps.vps_num_layer_sets_minus1
+        )));
+    }
+    w.write_ue(vps.vps_num_layer_sets_minus1)?;
+    for &mask in &vps.layer_id_included {
+        if vps.vps_max_layer_id < 63 && mask >> (vps.vps_max_layer_id + 1) != 0 {
+            return Err(BitstreamError::invalid(
+                "VPS layer_id_included mask has bits above vps_max_layer_id",
+            ));
+        }
+        for j in 0..=vps.vps_max_layer_id {
+            w.write_bit(((mask >> j) & 1) as u32);
+        }
+    }
+    w.write_bit(u32::from(vps.vps_timing_info_present_flag));
+    if vps.vps_timing_info_present_flag {
+        w.write_bits(vps.vps_num_units_in_tick, 32);
+        w.write_bits(vps.vps_time_scale, 32);
+        w.write_bit(u32::from(vps.vps_poc_proportional_to_timing_flag));
+        if vps.vps_poc_proportional_to_timing_flag {
+            w.write_ue(vps.vps_num_ticks_poc_diff_one_minus1)?;
+        }
+        if vps.hrd_parameters.len() as u64 > vps.vps_num_layer_sets_minus1 as u64 + 1 {
+            return Err(BitstreamError::invalid(
+                "VPS vps_num_hrd_parameters exceeds vps_num_layer_sets_minus1 + 1 (§7.4.3.1)",
+            ));
+        }
+        w.write_ue(vps.hrd_parameters.len() as u32)?;
+        for (i, entry) in vps.hrd_parameters.iter().enumerate() {
+            w.write_ue(entry.hrd_layer_set_idx)?;
+            if i == 0 {
+                if !entry.cprms_present_flag {
+                    return Err(BitstreamError::invalid(
+                        "VPS cprms_present_flag[0] is inferred to 1 and cannot be 0 (§7.4.3.1)",
+                    ));
+                }
+            } else {
+                w.write_bit(u32::from(entry.cprms_present_flag));
+            }
+            if entry.cprms_present_flag {
+                write_hrd_parameters(&mut w, &entry.hrd, true, vps.vps_max_sub_layers_minus1)?;
+            } else {
+                // §7.4.3.1: common info is derived from entry i − 1;
+                // require the stored inherited copies to match so the
+                // emitted stream resolves back to this struct.
+                let prev = &vps.hrd_parameters[i - 1].hrd;
+                let inherited_matches = entry.hrd.nal_hrd_parameters_present_flag
+                    == prev.nal_hrd_parameters_present_flag
+                    && entry.hrd.vcl_hrd_parameters_present_flag
+                        == prev.vcl_hrd_parameters_present_flag
+                    && entry.hrd.sub_pic_hrd_params_present_flag
+                        == prev.sub_pic_hrd_params_present_flag
+                    && entry.hrd.tick_divisor_minus2 == prev.tick_divisor_minus2
+                    && entry.hrd.du_cpb_removal_delay_increment_length_minus1
+                        == prev.du_cpb_removal_delay_increment_length_minus1
+                    && entry.hrd.sub_pic_cpb_params_in_pic_timing_sei_flag
+                        == prev.sub_pic_cpb_params_in_pic_timing_sei_flag
+                    && entry.hrd.dpb_output_delay_du_length_minus1
+                        == prev.dpb_output_delay_du_length_minus1
+                    && entry.hrd.bit_rate_scale == prev.bit_rate_scale
+                    && entry.hrd.cpb_size_scale == prev.cpb_size_scale
+                    && entry.hrd.cpb_size_du_scale == prev.cpb_size_du_scale
+                    && entry.hrd.initial_cpb_removal_delay_length_minus1
+                        == prev.initial_cpb_removal_delay_length_minus1
+                    && entry.hrd.au_cpb_removal_delay_length_minus1
+                        == prev.au_cpb_removal_delay_length_minus1
+                    && entry.hrd.dpb_output_delay_length_minus1
+                        == prev.dpb_output_delay_length_minus1;
+                if !inherited_matches {
+                    return Err(BitstreamError::invalid(
+                        "VPS HRD entry with cprms_present_flag == 0 must carry common-info \
+                         fields identical to the previous entry's (§7.4.3.1 inheritance)",
+                    ));
+                }
+                write_hrd_parameters(&mut w, &entry.hrd, false, vps.vps_max_sub_layers_minus1)?;
+            }
+        }
+    } else if !vps.hrd_parameters.is_empty() {
+        return Err(BitstreamError::invalid(
+            "VPS HRD entries can only be coded inside the timing-info block (§7.3.2.1)",
+        ));
+    }
+    w.write_bit(0); // vps_extension_flag (refused above when set)
+    w.write_rbsp_trailing_bits();
+    Ok(w.finish())
+}
+
+/// Emit a complete VPS NAL: canonical two-byte NAL header (type 32,
+/// layer 0, TID 0) + emulation-prevention-encoded RBSP.
+pub fn write_vps_nal(vps: &HevcVps) -> Result<Vec<u8>, BitstreamError> {
+    let rbsp = write_vps(vps)?;
+    let mut out = Vec::with_capacity(2 + rbsp.len());
+    out.push(NAL_TYPE_VPS << 1); // 0x40
+    out.push(0x01);
+    out.extend_from_slice(&crate::nal::rbsp_to_ebsp(&rbsp));
+    Ok(out)
 }
 
 /// Parse a minimal IRAP slice-segment header (7.3.6.1). Only the
@@ -1953,7 +3177,15 @@ mod tests {
         w.write_bit(0); // sps_extension_present_flag
         w.write_rbsp_trailing_bits();
 
-        let sps = parse_sps_nal(&sps_nal_from(w)).expect("full SPS parses");
+        let nal = sps_nal_from(w);
+        let sps = parse_sps_nal(&nal).expect("full SPS parses");
+        // Byte-exact writer inverse — covers PCM, explicit + predicted
+        // ST-RPS, long-term pics, VUI and HRD in one shot.
+        assert_eq!(
+            write_sps_nal(&sps).expect("SPS writes"),
+            nal,
+            "SPS parse→write must be byte-exact"
+        );
         assert!(sps.pcm_enabled_flag);
         assert_eq!(sps.pcm_sample_bit_depth_luma_minus1, 7);
         assert_eq!(sps.log2_diff_max_min_pcm_luma_coding_block_size, 2);
@@ -1972,6 +3204,36 @@ mod tests {
         assert_eq!(s1.delta_poc_s0, vec![-1, -2, -3]);
         assert_eq!(s1.used_by_curr_pic_s0, vec![true, true, false]);
         assert_eq!(s1.num_delta_pocs(), 3);
+        // Raw coding retention: set 0 explicit, set 1 predicted with
+        // the original prediction syntax preserved.
+        assert_eq!(s0.coding, HevcStRpsCoding::Explicit);
+        match &s1.coding {
+            HevcStRpsCoding::InterPredicted {
+                delta_rps_sign,
+                abs_delta_rps_minus1,
+                used_by_curr_pic_flag,
+                use_delta_flag,
+            } => {
+                assert!(*delta_rps_sign);
+                assert_eq!(*abs_delta_rps_minus1, 0);
+                assert_eq!(used_by_curr_pic_flag, &vec![true, false, true]);
+                assert_eq!(use_delta_flag, &vec![true, true, true]);
+            }
+            other => panic!("expected inter-predicted coding, got {other:?}"),
+        }
+        // Lossless PTL + ordering-info retention.
+        assert_eq!(
+            sps.profile_tier_level.general_profile_compatibility_flags,
+            0x6000_0000
+        );
+        assert_eq!(sps.profile_tier_level.general_constraint_bits, 0);
+        assert!(sps.profile_tier_level.sub_layers.is_empty());
+        assert!(sps.sps_sub_layer_ordering_info_present_flag);
+        assert_eq!(sps.sub_layer_ordering_info.len(), 1);
+        assert_eq!(
+            sps.sub_layer_ordering_info[0].max_dec_pic_buffering_minus1,
+            4
+        );
 
         assert!(sps.long_term_ref_pics_present_flag);
         assert_eq!(sps.long_term_ref_pics, vec![(200, true)]);
@@ -2041,7 +3303,13 @@ mod tests {
         w.write_bit(0); // sps_extension
         w.write_rbsp_trailing_bits();
 
-        let sps = parse_sps_nal(&sps_nal_from(w)).expect("scaling-list SPS parses");
+        let nal = sps_nal_from(w);
+        let sps = parse_sps_nal(&nal).expect("scaling-list SPS parses");
+        assert_eq!(
+            write_sps_nal(&sps).expect("SPS writes"),
+            nal,
+            "scaling-list SPS parse→write must be byte-exact"
+        );
         assert!(sps.scaling_list_enabled_flag);
         let d = sps.scaling_list_data.expect("scaling list data");
         assert!(d.pred_mode_flag[0][0]);
@@ -2145,6 +3413,13 @@ mod tests {
         let mut nal = vec![NAL_TYPE_VPS << 1, 0x01];
         nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
         let vps = parse_vps_nal(&nal).expect("full VPS parses");
+        // Byte-exact writer inverse — covers layer sets, timing and
+        // the cprms-inherited HRD entry.
+        assert_eq!(
+            write_vps_nal(&vps).expect("VPS writes"),
+            nal,
+            "VPS parse→write must be byte-exact"
+        );
         assert!(vps.vps_base_layer_internal_flag);
         assert_eq!(vps.vps_max_dec_pic_buffering_minus1, 4);
         assert_eq!(vps.vps_max_num_reorder_pics, 1);
@@ -2156,22 +3431,35 @@ mod tests {
         assert_eq!(vps.vps_time_scale, 30000);
         assert!(vps.vps_poc_proportional_to_timing_flag);
         assert_eq!(vps.hrd_parameters.len(), 2);
-        let (idx0, h0) = &vps.hrd_parameters[0];
-        assert_eq!(*idx0, 0);
-        assert!(h0.nal_hrd_parameters_present_flag);
-        assert_eq!(h0.bit_rate_scale, 3);
-        assert_eq!(h0.sub_layers[0].nal_cpb[0].bit_rate_value_minus1, 99);
-        let (idx1, h1) = &vps.hrd_parameters[1];
-        assert_eq!(*idx1, 1);
+        let e0 = &vps.hrd_parameters[0];
+        assert_eq!(e0.hrd_layer_set_idx, 0);
+        assert!(e0.cprms_present_flag, "entry 0 cprms inferred to 1");
+        assert!(e0.hrd.nal_hrd_parameters_present_flag);
+        assert_eq!(e0.hrd.bit_rate_scale, 3);
+        assert_eq!(e0.hrd.sub_layers[0].nal_cpb[0].bit_rate_value_minus1, 99);
+        let e1 = &vps.hrd_parameters[1];
+        assert_eq!(e1.hrd_layer_set_idx, 1);
+        assert!(!e1.cprms_present_flag, "entry 1 coded cprms=0 is retained");
         // Common info inherited from entry 0 (§7.4.3.1).
-        assert!(h1.nal_hrd_parameters_present_flag);
-        assert_eq!(h1.bit_rate_scale, 3);
-        assert_eq!(h1.cpb_size_scale, 4);
-        assert_eq!(h1.initial_cpb_removal_delay_length_minus1, 23);
+        assert!(e1.hrd.nal_hrd_parameters_present_flag);
+        assert_eq!(e1.hrd.bit_rate_scale, 3);
+        assert_eq!(e1.hrd.cpb_size_scale, 4);
+        assert_eq!(e1.hrd.initial_cpb_removal_delay_length_minus1, 23);
         // But the sub-layer CPB schedule is its own.
-        assert_eq!(h1.sub_layers[0].nal_cpb[0].bit_rate_value_minus1, 299);
-        assert!(h1.sub_layers[0].nal_cpb[0].cbr_flag);
+        assert_eq!(e1.hrd.sub_layers[0].nal_cpb[0].bit_rate_value_minus1, 299);
+        assert!(e1.hrd.sub_layers[0].nal_cpb[0].cbr_flag);
         assert!(!vps.vps_extension_flag);
+        // Lossless retention of the raw fields.
+        assert_eq!(vps.vps_reserved_0xffff_16bits, 0xFFFF);
+        assert!(vps.vps_sub_layer_ordering_info_present_flag);
+        assert_eq!(
+            vps.sub_layer_ordering_info,
+            vec![HevcSubLayerOrderingInfo {
+                max_dec_pic_buffering_minus1: 4,
+                max_num_reorder_pics: 1,
+                max_latency_increase_plus1: 0,
+            }]
+        );
     }
 
     #[test]
@@ -2337,6 +3625,11 @@ mod tests {
         let mut nal = vec![NAL_TYPE_PPS << 1, 0x01];
         nal.extend_from_slice(&crate::nal::rbsp_to_ebsp(&w.finish()));
         let pps = parse_pps_nal(&nal).expect("tiled PPS parses");
+        assert_eq!(
+            write_pps_nal(&pps).expect("PPS writes"),
+            nal,
+            "tiled/range-ext PPS parse→write must be byte-exact"
+        );
         assert!(pps.tiles_enabled_flag);
         assert!(pps.entropy_coding_sync_enabled_flag);
         let tiles = pps.tiles.expect("tiles");
@@ -2418,6 +3711,169 @@ mod tests {
     fn aud_parser_rejects_truncated_input() {
         let err = parse_aud_nal(&[0x46u8]).expect_err("1-byte NAL rejected");
         assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
+    }
+
+    #[test]
+    fn sps_with_sub_layer_ptl_and_ordering_roundtrips_byte_exact() {
+        // sps_max_sub_layers_minus1 = 2 exercises the sub-layer PTL
+        // retention (one full profile+level entry, one level-only,
+        // plus the reserved-bit run) and the multi-entry ordering
+        // block.
+        let mut w = crate::bit_writer::BitWriter::new();
+        w.write_bits(0, 4); // sps_video_parameter_set_id
+        w.write_bits(2, 3); // sps_max_sub_layers_minus1 = 2
+        w.write_bit(1); // sps_temporal_id_nesting_flag
+                        // profile_tier_level(1, 2):
+        w.write_bits(0, 2); // general_profile_space
+        w.write_bit(0); // general_tier_flag
+        w.write_bits(1, 5); // general_profile_idc
+        w.write_bits(0x6000_0000, 32); // compatibility flags
+        w.write_bits(0b1010, 4); // progressive/interlaced/non-packed/frame-only
+        w.write_bits(0, 32); // reserved mid
+        w.write_bits(0, 11); // reserved bottom
+        w.write_bit(1); // inbld/reserved (retained verbatim)
+        w.write_bits(93, 8); // general_level_idc
+                             // sub-layer presence flags [i][profile, level]:
+        w.write_bit(1); // sub_layer_profile_present_flag[0]
+        w.write_bit(1); // sub_layer_level_present_flag[0]
+        w.write_bit(0); // sub_layer_profile_present_flag[1]
+        w.write_bit(1); // sub_layer_level_present_flag[1]
+                        // reserved_zero_2bits — 2 * (8 - 2) = 12 bits:
+        w.write_bits(0, 12);
+        // sub-layer 0 profile:
+        w.write_bits(0, 2);
+        w.write_bit(0);
+        w.write_bits(1, 5);
+        w.write_bits(0x6000_0000, 32);
+        w.write_bits(0, 4);
+        w.write_bits(0, 32);
+        w.write_bits(0, 11);
+        w.write_bit(0);
+        w.write_bits(63, 8); // sub_layer_level_idc[0]
+        w.write_bits(30, 8); // sub_layer_level_idc[1]
+        w.write_ue(0).unwrap(); // sps_seq_parameter_set_id
+        w.write_ue(1).unwrap(); // chroma_format_idc
+        w.write_ue(320).unwrap();
+        w.write_ue(240).unwrap();
+        w.write_bit(0); // conformance_window_flag
+        w.write_ue(0).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_ue(4).unwrap(); // log2_max_pic_order_cnt_lsb_minus4
+        w.write_bit(1); // sps_sub_layer_ordering_info_present_flag
+        for i in 0..3u32 {
+            w.write_ue(2 + i).unwrap(); // max_dec_pic_buffering_minus1
+            w.write_ue(i).unwrap(); // max_num_reorder_pics
+            w.write_ue(0).unwrap(); // max_latency_increase_plus1
+        }
+        w.write_ue(0).unwrap(); // log2_min_luma_coding_block_size_minus3
+        w.write_ue(3).unwrap(); // log2_diff_max_min_luma_coding_block_size
+        w.write_ue(0).unwrap();
+        w.write_ue(3).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_ue(0).unwrap();
+        w.write_bit(0); // scaling_list_enabled_flag
+        w.write_bit(0); // amp
+        w.write_bit(0); // sao
+        w.write_bit(0); // pcm
+        w.write_ue(0).unwrap(); // num_short_term_ref_pic_sets
+        w.write_bit(0); // long_term
+        w.write_bit(0); // temporal_mvp
+        w.write_bit(0); // strong_intra_smoothing
+        w.write_bit(0); // vui
+        w.write_bit(1); // sps_extension_present_flag (all-zero flags)
+        w.write_bit(0); // range
+        w.write_bit(0); // multilayer
+        w.write_bit(0); // 3d
+        w.write_bit(0); // scc
+        w.write_bits(0, 4); // sps_extension_4bits
+        w.write_rbsp_trailing_bits();
+
+        let nal = sps_nal_from(w);
+        let sps = parse_sps_nal(&nal).expect("multi-sub-layer SPS parses");
+        assert_eq!(
+            sps.profile_tier_level.general_constraint_bits,
+            (0b1010u64 << 44) | 1
+        );
+        assert_eq!(sps.profile_tier_level.sub_layers.len(), 2);
+        assert!(sps.profile_tier_level.sub_layers[0].profile.is_some());
+        assert_eq!(sps.profile_tier_level.sub_layers[0].level_idc, Some(63));
+        assert!(sps.profile_tier_level.sub_layers[1].profile.is_none());
+        assert_eq!(sps.profile_tier_level.sub_layers[1].level_idc, Some(30));
+        assert_eq!(sps.sub_layer_ordering_info.len(), 3);
+        assert_eq!(sps.sps_max_dec_pic_buffering_minus1, 4);
+        assert!(sps.sps_extension_present_flag);
+        assert!(!sps.sps_range_extension_flag);
+        assert_eq!(
+            write_sps_nal(&sps).expect("SPS writes"),
+            nal,
+            "multi-sub-layer SPS parse→write must be byte-exact"
+        );
+    }
+
+    #[test]
+    fn fixture_free_writers_reject_unrepresentable_structs() {
+        // vps_extension_flag = 1 — the extension payload is not
+        // retained, so the writer must refuse instead of silently
+        // truncating.
+        let vps = HevcVps {
+            vps_extension_flag: true,
+            vps_reserved_0xffff_16bits: 0xFFFF,
+            sub_layer_ordering_info: vec![HevcSubLayerOrderingInfo::default()],
+            ..HevcVps::default()
+        };
+        assert!(matches!(
+            write_vps(&vps).unwrap_err(),
+            BitstreamError::Unsupported(_)
+        ));
+
+        // sps_extension_4bits != 0 — trailing sps_extension_data_flag
+        // bits are unretained.
+        let sps = HevcSps {
+            sps_extension_present_flag: true,
+            sps_extension_4bits: 1,
+            sub_layer_ordering_info: vec![HevcSubLayerOrderingInfo::default()],
+            log2_diff_max_min_luma_coding_block_size: 3,
+            ..HevcSps::default()
+        };
+        assert!(matches!(
+            write_sps(&sps).unwrap_err(),
+            BitstreamError::Unsupported(_)
+        ));
+
+        // Inter-predicted RPS whose resolved vectors do not match its
+        // raw coding must be rejected (the emitted stream would parse
+        // to something else).
+        let base = HevcShortTermRps {
+            delta_poc_s0: vec![-1],
+            used_by_curr_pic_s0: vec![true],
+            ..HevcShortTermRps::default()
+        };
+        let bad = HevcShortTermRps {
+            delta_poc_s0: vec![-5], // derivation would give -2
+            used_by_curr_pic_s0: vec![true],
+            coding: HevcStRpsCoding::InterPredicted {
+                delta_rps_sign: true,
+                abs_delta_rps_minus1: 0,
+                used_by_curr_pic_flag: vec![true, false],
+                use_delta_flag: vec![true, false],
+            },
+            ..HevcShortTermRps::default()
+        };
+        let sps = HevcSps {
+            num_short_term_ref_pic_sets: 2,
+            short_term_rps: vec![base, bad],
+            sps_max_dec_pic_buffering_minus1: 4,
+            sub_layer_ordering_info: vec![HevcSubLayerOrderingInfo {
+                max_dec_pic_buffering_minus1: 4,
+                ..HevcSubLayerOrderingInfo::default()
+            }],
+            log2_diff_max_min_luma_coding_block_size: 3,
+            ..HevcSps::default()
+        };
+        assert!(matches!(
+            write_sps(&sps).unwrap_err(),
+            BitstreamError::InvalidData(_)
+        ));
     }
 
     #[test]

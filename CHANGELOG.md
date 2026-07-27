@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- hevc: byte-exact VPS/SPS/PPS writers — `write_vps`/`write_vps_nal`,
+  `write_sps`/`write_sps_nal` and `write_pps`/`write_pps_nal` are full
+  inverses of the parsers (§7.3.2.1/§7.3.2.2.1/§7.3.2.3.1 +
+  `rbsp_trailing_bits()`, canonical layer-0/TID-0 NAL headers,
+  emulation-prevention encoding), pinned byte-exact against the
+  reference fixture's parameter sets and against synthetic streams
+  covering scaling lists, PCM, explicit + inter-predicted ST-RPS,
+  long-term pics, VUI/HRD, tiles, the range extensions and
+  cprms-inherited VPS HRD entries. Hand-built structs are validated
+  structurally (gate-flag/`Option` consistency, list-length vs.
+  declared-count checks, §7.4.8 re-derivation of inter-predicted RPS
+  resolved vectors); unrepresentable inputs (`vps_extension_flag`,
+  non-zero `sps/pps_extension_4bits`, multilayer/3D/SCC extensions)
+  are refused as `Unsupported`.
+- hevc: lossless parse retention backing the writers —
+  `HevcProfileTierLevel` now keeps the 48 constraint/reserved bits,
+  the inter-flag reserved run and every coded sub-layer profile/level
+  entry (`HevcSubLayerPtl`/`HevcSubLayerProfile`); VPS/SPS keep the
+  raw sub-layer ordering tables (`HevcSubLayerOrderingInfo`) and
+  present flags; `HevcShortTermRps` records its raw §7.3.7 coding
+  (`HevcStRpsCoding`); VPS entries keep `vps_reserved_0xffff_16bits`
+  and per-entry `cprms_present_flag` (new `HevcVpsHrdEntry` replaces
+  the `(idx, hrd)` tuple); SPS/PPS keep `*_extension_present_flag` +
+  `*_extension_4bits`.
+
+### Changed
+- hevc: the per-sub-layer DPB cap (`max_dec_pic_buffering_minus1 ≤ 15`,
+  §A.4.2) is now enforced on **every** coded VPS/SPS ordering-info
+  entry, not just the highest sub-layer's.
 - h264: complete SPS parse — scaling lists (§7.3.2.1.1.1 `scaling_list()`
   with `UseDefaultScalingMatrixFlag` and freeze-after-zero semantics) and
   full VUI/HRD (Annex E §E.1.1/§E.1.2: aspect ratio incl. Extended_SAR,

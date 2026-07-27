@@ -3,7 +3,8 @@
 
 use oxideav_bitstream::hevc::{
     is_irap, parse_idr_only, parse_pps_nal, parse_sps_nal, parse_vps_nal, split_annex_b,
-    NAL_TYPE_IDR_N_LP, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+    write_pps_nal, write_sps_nal, write_vps_nal, NAL_TYPE_IDR_N_LP, NAL_TYPE_IDR_W_RADL,
+    NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
 const HEVC_MAIN: &[u8] = include_bytes!("fixtures/hevc_main_320x240_1frame.h265");
@@ -125,6 +126,37 @@ fn hevc_individual_parsers_succeed() {
     assert_eq!(sps.pic_width_in_luma_samples, 320);
     assert_eq!(sps.pic_height_in_luma_samples, 240);
     assert_eq!(pps.pps_seq_parameter_set_id, sps.sps_seq_parameter_set_id);
+}
+
+#[test]
+fn fixture_parameter_set_writers_are_byte_exact() {
+    // The parse→write inverses must reproduce the reference encoder's
+    // VPS / SPS / PPS NALs bit for bit — including the canonical
+    // two-byte NAL header (layer 0, TID 0) every conforming encoder
+    // uses for parameter sets.
+    let vps_nal = find_nal_of_type(HEVC_MAIN, NAL_TYPE_VPS).expect("HEVC has VPS");
+    let sps_nal = find_nal_of_type(HEVC_MAIN, NAL_TYPE_SPS).expect("HEVC has SPS");
+    let pps_nal = find_nal_of_type(HEVC_MAIN, NAL_TYPE_PPS).expect("HEVC has PPS");
+
+    let vps = parse_vps_nal(vps_nal).expect("parse_vps_nal");
+    let sps = parse_sps_nal(sps_nal).expect("parse_sps_nal");
+    let pps = parse_pps_nal(pps_nal).expect("parse_pps_nal");
+
+    assert_eq!(
+        write_vps_nal(&vps).expect("write_vps_nal"),
+        vps_nal,
+        "VPS writer must be byte-exact on the fixture"
+    );
+    assert_eq!(
+        write_sps_nal(&sps).expect("write_sps_nal"),
+        sps_nal,
+        "SPS writer must be byte-exact on the fixture"
+    );
+    assert_eq!(
+        write_pps_nal(&pps).expect("write_pps_nal"),
+        pps_nal,
+        "PPS writer must be byte-exact on the fixture"
+    );
 }
 
 #[test]
