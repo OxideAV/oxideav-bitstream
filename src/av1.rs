@@ -761,16 +761,37 @@ pub fn write_metadata_obu(meta: &Av1Metadata) -> Result<Vec<u8>, BitstreamError>
 
 // ─────────────────────────── Sequence header ─────────────────────────────────
 
-/// 6.4.2 `color_config`. Reduced form — we keep only the fields the
-/// HW backends actually need.
+/// The `(color_primaries, transfer_characteristics,
+/// matrix_coefficients)` triple that selects §6.4.2's identity (sRGB
+/// 4:4:4) branch: `CP_BT_709` / `TC_SRGB` / `MC_IDENTITY`.
+pub const AV1_IDENTITY_COLOR_DESCRIPTION: (u8, u8, u8) = (1, 13, 0);
+
+/// 5.5.4 `timing_info()`. `num_ticks_per_picture_minus_1` is `Some`
+/// iff `equal_picture_interval`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Av1TimingInfo {
+    pub num_units_in_display_tick: u32,
+    pub time_scale: u32,
+    pub num_ticks_per_picture_minus_1: Option<u32>,
+}
+
+/// 6.4.2 `color_config`, retained losslessly over the crate's
+/// single-operating-point envelope.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Av1ColorConfig {
     pub bit_depth: u8,
     pub monochrome: bool,
+    /// `(color_primaries, transfer_characteristics,
+    /// matrix_coefficients)` — `Some` iff
+    /// `color_description_present_flag`.
+    pub color_description: Option<(u8, u8, u8)>,
     pub color_range: bool,
     pub subsampling_x: bool,
     pub subsampling_y: bool,
     pub chroma_sample_position: u8,
+    /// `separate_uv_delta_q` — coded only for non-monochrome streams;
+    /// inferred 0 for monochrome (§6.4.2).
+    pub separate_uv_delta_q: bool,
 }
 
 /// 6.4.1 sequence header.
@@ -783,6 +804,14 @@ pub struct Av1SequenceHeader {
     pub seq_level_idx_0: u8,
     pub seq_tier_0: bool,
     pub operating_point_idc_0: u16,
+    /// `timing_info()` — `Some` iff `timing_info_present_flag` (never
+    /// present with `reduced_still_picture_header`).
+    pub timing_info: Option<Av1TimingInfo>,
+    /// `initial_display_delay_present_flag` (§5.5.1).
+    pub initial_display_delay_present_flag: bool,
+    /// `initial_display_delay_minus_1` for operating point 0 — `Some`
+    /// iff the present flag and the per-op flag were both set.
+    pub initial_display_delay_minus_1: Option<u8>,
 
     pub frame_width_bits: u8,
     pub frame_height_bits: u8,
@@ -891,13 +920,17 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
         let timing_info_present_flag = r.u(1) != 0;
         if timing_info_present_flag {
             // timing_info()
-            let _num_units_in_display_tick = r.u(32);
-            let _time_scale = r.u(32);
+            let mut t = Av1TimingInfo {
+                num_units_in_display_tick: r.u(32),
+                time_scale: r.u(32),
+                num_ticks_per_picture_minus_1: None,
+            };
             let equal_picture_interval = r.u(1) != 0;
             if equal_picture_interval {
                 // uvlc() per §4.10.3 — shared BitReader descriptor.
-                let _num_ticks_per_picture_minus_1 = r.uvlc();
+                t.num_ticks_per_picture_minus_1 = Some(r.uvlc());
             }
+            s.timing_info = Some(t);
             let decoder_model_info_present_flag = r.u(1) != 0;
             if decoder_model_info_present_flag {
                 return Err(BitstreamError::unsupported(
@@ -906,6 +939,7 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
             }
         }
         let initial_display_delay_present_flag = r.u(1) != 0;
+        s.initial_display_delay_present_flag = initial_display_delay_present_flag;
         let operating_points_cnt_minus_1 = r.u(5) as u8;
         if operating_points_cnt_minus_1 > 0 {
             return Err(BitstreamError::unsupported(
@@ -921,7 +955,7 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
         if initial_display_delay_present_flag {
             let initial_display_delay_present_for_this_op = r.u(1) != 0;
             if initial_display_delay_present_for_this_op {
-                let _initial_display_delay_minus_1 = r.u(4);
+                s.initial_display_delay_minus_1 = Some(r.u(4) as u8);
             }
         }
     }
@@ -1006,19 +1040,22 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
     };
     let color_description_present_flag = r.u(1) != 0;
     if color_description_present_flag {
-        let _color_primaries = r.u(8);
-        let _transfer_characteristics = r.u(8);
-        let _matrix_coefficients = r.u(8);
+        s.color_config.color_description = Some((r.u(8) as u8, r.u(8) as u8, r.u(8) as u8));
     }
     if s.color_config.monochrome {
         s.color_config.color_range = r.u(1) != 0;
         s.color_config.subsampling_x = true;
         s.color_config.subsampling_y = true;
         s.color_config.chroma_sample_position = 0;
+        // separate_uv_delta_q inferred 0 (§6.4.2) — no further reads.
+    } else if s.color_config.color_description == Some(AV1_IDENTITY_COLOR_DESCRIPTION) {
+        // §6.4.2 identity (sRGB/RGB) branch: color_range is implied 1
+        // and 4:4:4 is forced; no chroma_sample_position is coded.
+        s.color_config.color_range = true;
+        s.color_config.subsampling_x = false;
+        s.color_config.subsampling_y = false;
+        s.color_config.separate_uv_delta_q = r.u(1) != 0;
     } else {
-        // identity (RGB) signalling: color_primaries==BT_709 et al.
-        // For our scope we just read the fields and don't special-case
-        // identity — we still record subsampling x/y.
         s.color_config.color_range = r.u(1) != 0;
         if s.seq_profile == 0 {
             s.color_config.subsampling_x = true;
@@ -1043,11 +1080,335 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
         if s.color_config.subsampling_x && s.color_config.subsampling_y {
             s.color_config.chroma_sample_position = r.u(2) as u8;
         }
-        let _separate_uv_deltas_present = r.u(1);
+        s.color_config.separate_uv_delta_q = r.u(1) != 0;
     }
     s.film_grain_params_present = r.u(1) != 0;
     // trailing_bits handled by caller (we just stop reading).
     Ok(s)
+}
+
+// ─────────────────────────── Sequence header writer ──────────────────────────
+
+/// Emit an `OBU_SEQUENCE_HEADER` payload (§5.5, including
+/// `trailing_bits()`) — the byte-exact inverse of
+/// [`parse_sequence_header`] over the crate's single-operating-point
+/// envelope (no decoder model, one operating point). Frame the result
+/// with [`write_obu`] for the wire.
+pub fn write_sequence_header(s: &Av1SequenceHeader) -> Result<Vec<u8>, BitstreamError> {
+    let mut w = crate::bit_writer::BitWriter::new();
+    if s.seq_profile > 2 {
+        return Err(BitstreamError::invalid(format!(
+            "invalid seq_profile={}",
+            s.seq_profile
+        )));
+    }
+    if s.reduced_still_picture_header && !s.still_picture {
+        return Err(BitstreamError::invalid(
+            "reduced_still_picture_header=1 with still_picture=0",
+        ));
+    }
+    if s.seq_level_idx_0 > 31 {
+        return Err(BitstreamError::invalid("seq_level_idx does not fit f(5)"));
+    }
+    w.write_bits(s.seq_profile as u32, 3);
+    w.write_bit(u32::from(s.still_picture));
+    w.write_bit(u32::from(s.reduced_still_picture_header));
+    if s.reduced_still_picture_header {
+        if s.timing_info.is_some()
+            || s.initial_display_delay_present_flag
+            || s.seq_tier_0
+            || s.operating_point_idc_0 != 0
+        {
+            return Err(BitstreamError::invalid(
+                "reduced_still_picture_header forbids timing info, display delays, \
+                 tiers and operating-point idc (5.5.1)",
+            ));
+        }
+        w.write_bits(s.seq_level_idx_0 as u32, 5);
+    } else {
+        w.write_bit(u32::from(s.timing_info.is_some()));
+        if let Some(t) = &s.timing_info {
+            if t.num_units_in_display_tick == 0 || t.time_scale == 0 {
+                return Err(BitstreamError::invalid(
+                    "timing_info: num_units_in_display_tick and time_scale must be > 0 (6.4.3)",
+                ));
+            }
+            w.write_bits(t.num_units_in_display_tick, 32);
+            w.write_bits(t.time_scale, 32);
+            w.write_bit(u32::from(t.num_ticks_per_picture_minus_1.is_some()));
+            if let Some(n) = t.num_ticks_per_picture_minus_1 {
+                w.write_uvlc(n);
+            }
+            w.write_bit(0); // decoder_model_info_present_flag (outside envelope)
+        }
+        w.write_bit(u32::from(s.initial_display_delay_present_flag));
+        w.write_bits(0, 5); // operating_points_cnt_minus_1 (single-op envelope)
+        if s.operating_point_idc_0 > 0x0fff {
+            return Err(BitstreamError::invalid(
+                "operating_point_idc does not fit f(12)",
+            ));
+        }
+        w.write_bits(s.operating_point_idc_0 as u32, 12);
+        w.write_bits(s.seq_level_idx_0 as u32, 5);
+        if s.seq_level_idx_0 > 7 {
+            w.write_bit(u32::from(s.seq_tier_0));
+        } else if s.seq_tier_0 {
+            return Err(BitstreamError::invalid(
+                "seq_tier is only coded for seq_level_idx > 7 (5.5.1)",
+            ));
+        }
+        match (
+            s.initial_display_delay_minus_1,
+            s.initial_display_delay_present_flag,
+        ) {
+            (Some(d), true) => {
+                if d > 15 {
+                    return Err(BitstreamError::invalid(
+                        "initial_display_delay_minus_1 does not fit f(4)",
+                    ));
+                }
+                w.write_bit(1);
+                w.write_bits(d as u32, 4);
+            }
+            (None, true) => w.write_bit(0),
+            (None, false) => {}
+            (Some(_), false) => {
+                return Err(BitstreamError::invalid(
+                    "initial_display_delay requires initial_display_delay_present_flag (5.5.1)",
+                ));
+            }
+        }
+    }
+    if !(1..=16).contains(&s.frame_width_bits) || !(1..=16).contains(&s.frame_height_bits) {
+        return Err(BitstreamError::invalid(
+            "frame_width/height_bits must be 1..=16 (frame_width_bits_minus_1 is f(4))",
+        ));
+    }
+    let wbits = s.frame_width_bits as u32;
+    let hbits = s.frame_height_bits as u32;
+    if (wbits < 32 && s.max_frame_width_minus_1 >= (1 << wbits))
+        || (hbits < 32 && s.max_frame_height_minus_1 >= (1 << hbits))
+    {
+        return Err(BitstreamError::invalid(
+            "max_frame_width/height_minus_1 does not fit the declared bit width",
+        ));
+    }
+    w.write_bits(wbits - 1, 4);
+    w.write_bits(hbits - 1, 4);
+    w.write_bits(s.max_frame_width_minus_1, wbits);
+    w.write_bits(s.max_frame_height_minus_1, hbits);
+    if s.reduced_still_picture_header {
+        if s.frame_id_numbers_present_flag {
+            return Err(BitstreamError::invalid(
+                "frame_id_numbers_present_flag forbidden with reduced_still_picture_header",
+            ));
+        }
+    } else {
+        w.write_bit(u32::from(s.frame_id_numbers_present_flag));
+    }
+    if s.frame_id_numbers_present_flag {
+        if s.delta_frame_id_length_minus_2 > 15 || s.additional_frame_id_length_minus_1 > 7 {
+            return Err(BitstreamError::invalid(
+                "frame-id length fields do not fit f(4)/f(3)",
+            ));
+        }
+        w.write_bits(s.delta_frame_id_length_minus_2 as u32, 4);
+        w.write_bits(s.additional_frame_id_length_minus_1 as u32, 3);
+    }
+    w.write_bit(u32::from(s.use_128x128_superblock));
+    w.write_bit(u32::from(s.enable_filter_intra));
+    w.write_bit(u32::from(s.enable_intra_edge_filter));
+    if s.reduced_still_picture_header {
+        // §5.5.1 inferred values — reject structs that contradict them
+        // so the writer stays a true inverse.
+        if s.enable_interintra_compound
+            || s.enable_masked_compound
+            || s.enable_warped_motion
+            || s.enable_dual_filter
+            || s.enable_order_hint
+            || s.enable_jnt_comp
+            || s.enable_ref_frame_mvs
+            || s.seq_force_screen_content_tools != 2
+            || s.seq_force_integer_mv != 2
+            || s.order_hint_bits != 0
+        {
+            return Err(BitstreamError::invalid(
+                "reduced_still_picture_header fixes the inter-tool flags to their \
+                 §5.5.1 inferred values",
+            ));
+        }
+    } else {
+        w.write_bit(u32::from(s.enable_interintra_compound));
+        w.write_bit(u32::from(s.enable_masked_compound));
+        w.write_bit(u32::from(s.enable_warped_motion));
+        w.write_bit(u32::from(s.enable_dual_filter));
+        w.write_bit(u32::from(s.enable_order_hint));
+        if s.enable_order_hint {
+            w.write_bit(u32::from(s.enable_jnt_comp));
+            w.write_bit(u32::from(s.enable_ref_frame_mvs));
+        } else if s.enable_jnt_comp || s.enable_ref_frame_mvs {
+            return Err(BitstreamError::invalid(
+                "enable_jnt_comp / enable_ref_frame_mvs require enable_order_hint (5.5.1)",
+            ));
+        }
+        w.write_bit(u32::from(s.seq_choose_screen_content_tools));
+        if s.seq_choose_screen_content_tools {
+            if s.seq_force_screen_content_tools != 2 {
+                return Err(BitstreamError::invalid(
+                    "seq_choose_screen_content_tools implies \
+                     seq_force_screen_content_tools == 2 (SELECT_SCREEN_CONTENT_TOOLS)",
+                ));
+            }
+        } else {
+            if s.seq_force_screen_content_tools > 1 {
+                return Err(BitstreamError::invalid(
+                    "coded seq_force_screen_content_tools is a single bit (5.5.1)",
+                ));
+            }
+            w.write_bit(s.seq_force_screen_content_tools as u32);
+        }
+        if s.seq_force_screen_content_tools > 0 {
+            w.write_bit(u32::from(s.seq_choose_integer_mv));
+            if s.seq_choose_integer_mv {
+                if s.seq_force_integer_mv != 2 {
+                    return Err(BitstreamError::invalid(
+                        "seq_choose_integer_mv implies seq_force_integer_mv == 2 \
+                         (SELECT_INTEGER_MV)",
+                    ));
+                }
+            } else {
+                if s.seq_force_integer_mv > 1 {
+                    return Err(BitstreamError::invalid(
+                        "coded seq_force_integer_mv is a single bit (5.5.1)",
+                    ));
+                }
+                w.write_bit(s.seq_force_integer_mv as u32);
+            }
+        } else if s.seq_force_integer_mv != 2 {
+            return Err(BitstreamError::invalid(
+                "seq_force_integer_mv is inferred 2 when screen-content tools are off (5.5.1)",
+            ));
+        }
+        if s.enable_order_hint {
+            if !(1..=8).contains(&s.order_hint_bits) {
+                return Err(BitstreamError::invalid(
+                    "order_hint_bits must be 1..=8 when enable_order_hint (5.5.1)",
+                ));
+            }
+            w.write_bits(s.order_hint_bits as u32 - 1, 3);
+        } else if s.order_hint_bits != 0 {
+            return Err(BitstreamError::invalid(
+                "order_hint_bits must be 0 when enable_order_hint is off (5.5.1)",
+            ));
+        }
+    }
+    w.write_bit(u32::from(s.enable_superres));
+    w.write_bit(u32::from(s.enable_cdef));
+    w.write_bit(u32::from(s.enable_restoration));
+    write_color_config(&mut w, s)?;
+    w.write_bit(u32::from(s.film_grain_params_present));
+    w.write_rbsp_trailing_bits(); // §5.3.4 trailing_bits()
+    Ok(w.finish())
+}
+
+/// §6.4.2 `color_config()` emission for [`write_sequence_header`].
+fn write_color_config(
+    w: &mut crate::bit_writer::BitWriter,
+    s: &Av1SequenceHeader,
+) -> Result<(), BitstreamError> {
+    let c = &s.color_config;
+    let high_bitdepth = match c.bit_depth {
+        8 => false,
+        10 => true,
+        12 if s.seq_profile == 2 => true,
+        _ => {
+            return Err(BitstreamError::invalid(format!(
+                "bit_depth {} not expressible for seq_profile {} (6.4.2)",
+                c.bit_depth, s.seq_profile
+            )));
+        }
+    };
+    w.write_bit(u32::from(high_bitdepth));
+    if s.seq_profile == 2 && high_bitdepth {
+        w.write_bit(u32::from(c.bit_depth == 12));
+    }
+    if s.seq_profile == 1 {
+        if c.monochrome {
+            return Err(BitstreamError::invalid(
+                "seq_profile 1 cannot signal monochrome (6.4.2)",
+            ));
+        }
+    } else {
+        w.write_bit(u32::from(c.monochrome));
+    }
+    w.write_bit(u32::from(c.color_description.is_some()));
+    if let Some((cp, tc, mc)) = c.color_description {
+        w.write_bits(cp as u32, 8);
+        w.write_bits(tc as u32, 8);
+        w.write_bits(mc as u32, 8);
+    }
+    if c.monochrome {
+        w.write_bit(u32::from(c.color_range));
+        if !c.subsampling_x
+            || !c.subsampling_y
+            || c.chroma_sample_position != 0
+            || c.separate_uv_delta_q
+        {
+            return Err(BitstreamError::invalid(
+                "monochrome fixes subsampling to 4:0:0 and separate_uv_delta_q to 0 (6.4.2)",
+            ));
+        }
+        return Ok(());
+    }
+    if c.color_description == Some(AV1_IDENTITY_COLOR_DESCRIPTION) {
+        if !c.color_range || c.subsampling_x || c.subsampling_y {
+            return Err(BitstreamError::invalid(
+                "the identity colour description implies full-range 4:4:4 (6.4.2)",
+            ));
+        }
+        w.write_bit(u32::from(c.separate_uv_delta_q));
+        return Ok(());
+    }
+    w.write_bit(u32::from(c.color_range));
+    let expected_ss = match s.seq_profile {
+        0 => Some((true, true)),
+        1 => Some((false, false)),
+        _ => None,
+    };
+    if let Some(exp) = expected_ss {
+        if (c.subsampling_x, c.subsampling_y) != exp {
+            return Err(BitstreamError::invalid(
+                "subsampling contradicts the fixed seq_profile 0/1 sampling (6.4.2)",
+            ));
+        }
+    } else if c.bit_depth == 12 {
+        w.write_bit(u32::from(c.subsampling_x));
+        if c.subsampling_x {
+            w.write_bit(u32::from(c.subsampling_y));
+        } else if c.subsampling_y {
+            return Err(BitstreamError::invalid(
+                "subsampling_y without subsampling_x is not expressible (6.4.2)",
+            ));
+        }
+    } else if (c.subsampling_x, c.subsampling_y) != (true, false) {
+        return Err(BitstreamError::invalid(
+            "seq_profile 2 at 8/10-bit fixes 4:2:2 sampling (6.4.2)",
+        ));
+    }
+    if c.subsampling_x && c.subsampling_y {
+        if c.chroma_sample_position > 3 {
+            return Err(BitstreamError::invalid(
+                "chroma_sample_position does not fit f(2)",
+            ));
+        }
+        w.write_bits(c.chroma_sample_position as u32, 2);
+    } else if c.chroma_sample_position != 0 {
+        return Err(BitstreamError::invalid(
+            "chroma_sample_position is only coded for 4:2:0 sampling (6.4.2)",
+        ));
+    }
+    w.write_bit(u32::from(c.separate_uv_delta_q));
+    Ok(())
 }
 
 // ─────────────────────────── Frame header parser ─────────────────────────────
@@ -1263,6 +1624,180 @@ pub fn parse_obu_stream(bytes: &[u8]) -> Result<Av1KeyframeParse<'_>, BitstreamE
 
 #[cfg(test)]
 mod tests {
+    // ─────────── sequence-header writer round-trips ───────────
+
+    #[test]
+    fn sequence_header_writer_roundtrips_typical_1080p() {
+        let s = super::Av1SequenceHeader {
+            seq_profile: 0,
+            seq_level_idx_0: 8,
+            seq_tier_0: true,
+            operating_point_idc_0: 0,
+            timing_info: Some(super::Av1TimingInfo {
+                num_units_in_display_tick: 1001,
+                time_scale: 60000,
+                num_ticks_per_picture_minus_1: Some(0),
+            }),
+            initial_display_delay_present_flag: true,
+            initial_display_delay_minus_1: Some(3),
+            frame_width_bits: 11,
+            frame_height_bits: 11,
+            max_frame_width_minus_1: 1919,
+            max_frame_height_minus_1: 1079,
+            use_128x128_superblock: true,
+            enable_filter_intra: true,
+            enable_intra_edge_filter: true,
+            enable_order_hint: true,
+            enable_jnt_comp: true,
+            enable_ref_frame_mvs: true,
+            seq_choose_screen_content_tools: true,
+            seq_force_screen_content_tools: 2,
+            seq_choose_integer_mv: true,
+            seq_force_integer_mv: 2,
+            order_hint_bits: 7,
+            enable_superres: false,
+            enable_cdef: true,
+            enable_restoration: true,
+            color_config: super::Av1ColorConfig {
+                bit_depth: 10,
+                monochrome: false,
+                color_description: Some((1, 1, 1)),
+                color_range: false,
+                subsampling_x: true,
+                subsampling_y: true,
+                chroma_sample_position: 1,
+                separate_uv_delta_q: false,
+            },
+            film_grain_params_present: true,
+            ..Default::default()
+        };
+        let payload = super::write_sequence_header(&s).expect("writes");
+        let back = super::parse_sequence_header(&payload).expect("re-parses");
+        assert_eq!(back, s);
+        assert_eq!(super::write_sequence_header(&back).unwrap(), payload);
+    }
+
+    #[test]
+    fn sequence_header_writer_roundtrips_reduced_still_picture() {
+        let s = super::Av1SequenceHeader {
+            seq_profile: 1,
+            still_picture: true,
+            reduced_still_picture_header: true,
+            seq_level_idx_0: 0,
+            frame_width_bits: 10,
+            frame_height_bits: 10,
+            max_frame_width_minus_1: 511,
+            max_frame_height_minus_1: 511,
+            seq_force_screen_content_tools: 2,
+            seq_force_integer_mv: 2,
+            enable_cdef: true,
+            color_config: super::Av1ColorConfig {
+                bit_depth: 8,
+                subsampling_x: false,
+                subsampling_y: false,
+                separate_uv_delta_q: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let payload = super::write_sequence_header(&s).expect("writes");
+        let back = super::parse_sequence_header(&payload).expect("re-parses");
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn sequence_header_writer_roundtrips_identity_rgb_and_monochrome() {
+        // Identity sRGB 4:4:4 (profile 1).
+        let s = super::Av1SequenceHeader {
+            seq_profile: 1,
+            seq_level_idx_0: 5,
+            frame_width_bits: 8,
+            frame_height_bits: 8,
+            max_frame_width_minus_1: 255,
+            max_frame_height_minus_1: 127,
+            seq_choose_screen_content_tools: true,
+            seq_force_screen_content_tools: 2,
+            seq_choose_integer_mv: true,
+            seq_force_integer_mv: 2,
+            color_config: super::Av1ColorConfig {
+                bit_depth: 8,
+                color_description: Some(super::AV1_IDENTITY_COLOR_DESCRIPTION),
+                color_range: true,
+                subsampling_x: false,
+                subsampling_y: false,
+                separate_uv_delta_q: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let payload = super::write_sequence_header(&s).expect("writes");
+        assert_eq!(super::parse_sequence_header(&payload).unwrap(), s);
+
+        // Monochrome (profile 0).
+        let s = super::Av1SequenceHeader {
+            seq_profile: 0,
+            seq_level_idx_0: 1,
+            frame_width_bits: 7,
+            frame_height_bits: 7,
+            max_frame_width_minus_1: 100,
+            max_frame_height_minus_1: 100,
+            seq_choose_screen_content_tools: true,
+            seq_force_screen_content_tools: 2,
+            seq_choose_integer_mv: true,
+            seq_force_integer_mv: 2,
+            color_config: super::Av1ColorConfig {
+                bit_depth: 8,
+                monochrome: true,
+                color_range: true,
+                subsampling_x: true,
+                subsampling_y: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let payload = super::write_sequence_header(&s).expect("writes");
+        assert_eq!(super::parse_sequence_header(&payload).unwrap(), s);
+    }
+
+    #[test]
+    fn sequence_header_writer_rejects_inconsistent_structs() {
+        let base = super::Av1SequenceHeader {
+            seq_profile: 0,
+            seq_level_idx_0: 1,
+            frame_width_bits: 7,
+            frame_height_bits: 7,
+            max_frame_width_minus_1: 100,
+            max_frame_height_minus_1: 100,
+            seq_choose_screen_content_tools: true,
+            seq_force_screen_content_tools: 2,
+            seq_choose_integer_mv: true,
+            seq_force_integer_mv: 2,
+            color_config: super::Av1ColorConfig {
+                bit_depth: 8,
+                subsampling_x: true,
+                subsampling_y: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // seq_tier without level > 7.
+        let mut s = base.clone();
+        s.seq_tier_0 = true;
+        assert!(super::write_sequence_header(&s).is_err());
+        // Width that does not fit the declared bits.
+        let mut s = base.clone();
+        s.max_frame_width_minus_1 = 1 << 10;
+        assert!(super::write_sequence_header(&s).is_err());
+        // Profile 1 sampling contradiction.
+        let mut s = base.clone();
+        s.seq_profile = 1;
+        assert!(super::write_sequence_header(&s).is_err());
+        // order_hint_bits without enable_order_hint.
+        let mut s = base;
+        s.order_hint_bits = 3;
+        assert!(super::write_sequence_header(&s).is_err());
+    }
+
     use super::*;
 
     #[test]

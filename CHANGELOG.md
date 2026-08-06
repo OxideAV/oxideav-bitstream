@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- av1: `write_sequence_header` — byte-exact inverse of
+  `parse_sequence_header` over the single-operating-point envelope
+  (§5.5 incl. `trailing_bits()`), pinned byte-exact on the crate's
+  keyframe fixture. The parser now retains `timing_info()`, the
+  initial-display-delay pair, the colour-description triple and
+  `separate_uv_delta_q` losslessly, and gains the §6.4.2 identity
+  (sRGB 4:4:4) branch — identity streams previously misread a
+  `color_range` bit that the spec never codes there.
 - hevc: typed SEI write direction — `encode_sei_message` is the
   inverse of `decode_sei_message` for every context-free family
   (MDCV, CLL, recovery point, ITU-T T.35, user-data-unregistered,
