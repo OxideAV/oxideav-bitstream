@@ -1188,20 +1188,13 @@ impl<T: core::fmt::Debug> UnwrapErrOrElsePanic<T> for Result<T, BitstreamError> 
 /// with canonical defaults the PH parser does not touch.
 fn sps_for_poc_width(log2_max_poc_lsb_minus4: u8) -> VvcSps {
     VvcSps {
-        sps_seq_parameter_set_id: 0,
-        sps_video_parameter_set_id: 0,
-        sps_max_sublayers_minus1: 0,
         sps_chroma_format_idc: 1,
         sps_log2_ctu_size_minus5: 2,
-        sps_ptl_dpb_hrd_params_present_flag: 0,
-        profile_tier_level: None,
         sps_pic_width_max_in_luma_samples: 1920,
         sps_pic_height_max_in_luma_samples: 1080,
-        sps_subpic_info_present_flag: 0,
         sps_bitdepth_minus8: 2,
-        sps_entropy_coding_sync_enabled_flag: 0,
-        sps_entry_point_offsets_present_flag: 0,
         sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
+        ..Default::default()
     }
 }
 

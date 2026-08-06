@@ -839,224 +839,23 @@ pub fn parse_vps(nal_body: &[u8]) -> Result<VvcVps, BitstreamError> {
     })
 }
 
-// ─────────────────────────── SPS RBSP (7.3.2.4) ─────────────────────────────
+// ──────────────────── SPS RBSP (7.3.2.4) — full walk ───────────────────────
 
-/// Decoded VVC SPS structural fields (7.3.2.4).
-///
-/// Carries the subset of SPS fields a HW-accel bridge needs to size
-/// CTU and frame buffers before submission. Fields between the
-/// surfaced ones (e.g. the GDR / ref-pic-resampling flags, the
-/// conformance-window offsets) are walked but not stored — they don't
-/// alter the buffer geometry the bridge cares about.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VvcSps {
-    /// `sps_seq_parameter_set_id` u(4) (7.4.3.4). 0..=15 selects which
-    /// SPS in the active set this is.
-    pub sps_seq_parameter_set_id: u8,
-    /// `sps_video_parameter_set_id` u(4) (7.4.3.4). Identifies the
-    /// referenced VPS, or 0 when no VPS is active.
-    pub sps_video_parameter_set_id: u8,
-    /// `sps_max_sublayers_minus1` u(3) (7.4.3.4). One less than the
-    /// maximum number of temporal sublayers that may be present in
-    /// each CLVS referring to the SPS.
-    pub sps_max_sublayers_minus1: u8,
-    /// `sps_chroma_format_idc` u(2) (7.4.3.4). 0 = 4:0:0, 1 = 4:2:0,
-    /// 2 = 4:2:2, 3 = 4:4:4.
-    pub sps_chroma_format_idc: u8,
-    /// `sps_log2_ctu_size_minus5` u(2) (7.4.3.4). `CtbLog2SizeY =
-    /// sps_log2_ctu_size_minus5 + 5`. The legal range covers
-    /// 32 / 64 / 128 CTU sizes.
-    pub sps_log2_ctu_size_minus5: u8,
-    /// `sps_ptl_dpb_hrd_params_present_flag` u(1). When 1, the SPS
-    /// also carries a `profile_tier_level()` structure (decoded into
-    /// [`VvcSps::profile_tier_level`]).
-    pub sps_ptl_dpb_hrd_params_present_flag: u8,
-    /// `profile_tier_level()` (7.3.3.1). Present when
-    /// `sps_ptl_dpb_hrd_params_present_flag = 1`, absent otherwise.
-    pub profile_tier_level: Option<VvcProfileTierLevel>,
-    /// `sps_pic_width_max_in_luma_samples` ue(v) (7.4.3.4).
-    pub sps_pic_width_max_in_luma_samples: u32,
-    /// `sps_pic_height_max_in_luma_samples` ue(v) (7.4.3.4).
-    pub sps_pic_height_max_in_luma_samples: u32,
-    /// `sps_subpic_info_present_flag` u(1) (7.4.3.4). When 1 the SPS
-    /// carries a subpicture sub-structure that this round does not
-    /// surface — the parser returns
-    /// `BitstreamError::Unsupported(_)` in that case so callers can
-    /// fall back to a software path.
-    pub sps_subpic_info_present_flag: u8,
-    /// `sps_bitdepth_minus8` ue(v) (7.4.3.4). Sample bit depth is
-    /// `8 + sps_bitdepth_minus8`. Range 0..=8 per the spec
-    /// (`BitDepth ≤ 16`).
-    pub sps_bitdepth_minus8: u32,
-    /// `sps_entropy_coding_sync_enabled_flag` u(1) (7.4.3.4). When 1,
-    /// the WPP-style synchronization process for context variables is
-    /// applied at the first CTB of every CTB row in each tile in each
-    /// picture referring to the SPS. Surfaced because HW bridges need
-    /// the flag to populate the per-picture WPP parameter on the
-    /// VA-API / Vulkan side.
-    pub sps_entropy_coding_sync_enabled_flag: u8,
-    /// `sps_entry_point_offsets_present_flag` u(1) (7.4.3.4). When 1,
-    /// entry-point offsets for tiles / tile-specific CTU rows may be
-    /// signalled in slice headers of pictures referring to the SPS.
-    pub sps_entry_point_offsets_present_flag: u8,
-    /// `sps_log2_max_pic_order_cnt_lsb_minus4` u(4) (7.4.3.4). Drives
-    /// the bit-width of `ph_pic_order_cnt_lsb` (7.3.2.8) via
-    /// `MaxPicOrderCntLsb = 1 << (sps_log2_max_pic_order_cnt_lsb_minus4
-    /// + 4)`. Spec range is 0..=12 (the PH POC field caps at 16 bits);
-    /// values outside that envelope return
-    /// [`BitstreamError::InvalidData`].
-    pub sps_log2_max_pic_order_cnt_lsb_minus4: u8,
-}
+pub mod params;
+pub mod sps;
 
-impl VvcSps {
-    /// `CtbLog2SizeY = sps_log2_ctu_size_minus5 + 5` (eq. (35) /
-    /// 7.4.3.4). Convenience accessor.
-    pub fn ctb_log2_size_y(&self) -> u32 {
-        self.sps_log2_ctu_size_minus5 as u32 + 5
-    }
-
-    /// `CtbSizeY = 1 << CtbLog2SizeY`.
-    pub fn ctb_size_y(&self) -> u32 {
-        1u32 << self.ctb_log2_size_y()
-    }
-
-    /// Effective sample bit depth (`8 + sps_bitdepth_minus8`).
-    pub fn bit_depth(&self) -> u32 {
-        8 + self.sps_bitdepth_minus8
-    }
-
-    /// Width of `ph_pic_order_cnt_lsb` in bits per 7.4.3.4 /
-    /// 7.4.3.8: `sps_log2_max_pic_order_cnt_lsb_minus4 + 4`.
-    pub fn poc_lsb_width(&self) -> u32 {
-        self.sps_log2_max_pic_order_cnt_lsb_minus4 as u32 + 4
-    }
-
-    /// `MaxPicOrderCntLsb = 1 << poc_lsb_width()` (7.4.3.4).
-    pub fn max_pic_order_cnt_lsb(&self) -> u32 {
-        1u32 << self.poc_lsb_width()
-    }
-}
-
-/// Spec upper bound on `sps_log2_max_pic_order_cnt_lsb_minus4`
-/// (7.4.3.4): `MaxPicOrderCntLsb` is bounded by 2^16, hence
-/// `sps_log2_max_pic_order_cnt_lsb_minus4 ≤ 12`. Surfaced so callers
-/// can validate against the same envelope the parser enforces.
-pub const SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX: u8 = 12;
-
-/// Strip the two-byte NAL header from an SPS NAL body (the `0x0_F_..`
-/// header bytes that [`parse_nal_header`] decodes), then parse the
-/// SPS RBSP per 7.3.2.4.
-///
-/// The input slice MUST point at the start of the NAL body (i.e.
-/// after [`split_annex_b`]). Emulation-prevention bytes are stripped
-/// via [`ebsp_to_rbsp`] before bit-level parsing.
-///
-/// The current round surfaces the structural fields a HW bridge
-/// needs to size buffers: SPS / VPS IDs, sublayer count, chroma
-/// format, CTU log2 size, optional `profile_tier_level()`, max
-/// luma width/height, subpicture-info presence flag and bit depth.
-/// All other SPS bits are skipped but walked so the reader ends in
-/// a well-defined state.
-///
-/// Returns [`BitstreamError::Unsupported`] when the SPS uses
-/// subpicture signalling (`sps_subpic_info_present_flag = 1`); the
-/// subpicture sub-structure is deferred to a later round.
-pub fn parse_sps(nal_body: &[u8]) -> Result<VvcSps, BitstreamError> {
-    if nal_body.len() < 2 {
-        return Err(BitstreamError::unexpected_end(
-            "H.266 SPS NAL needs at least the 2-byte header",
-        ));
-    }
-    let header = parse_nal_header(nal_body)?;
-    if header.nal_unit_type != NAL_TYPE_SPS {
-        return Err(BitstreamError::invalid(format!(
-            "expected SPS NAL (type {}), got {}",
-            NAL_TYPE_SPS, header.nal_unit_type
-        )));
-    }
-    let rbsp = ebsp_to_rbsp(&nal_body[2..]);
-    let mut r = BitReader::new(&rbsp);
-
-    let sps_seq_parameter_set_id = r.u(4) as u8;
-    let sps_video_parameter_set_id = r.u(4) as u8;
-    let sps_max_sublayers_minus1 = r.u(3) as u8;
-    let sps_chroma_format_idc = r.u(2) as u8;
-    let sps_log2_ctu_size_minus5 = r.u(2) as u8;
-    if sps_log2_ctu_size_minus5 > 2 {
-        return Err(BitstreamError::invalid(format!(
-            "sps_log2_ctu_size_minus5 = {sps_log2_ctu_size_minus5} > 2 (spec range 0..=2)"
-        )));
-    }
-    let sps_ptl_dpb_hrd_params_present_flag = r.u(1) as u8;
-    let profile_tier_level = if sps_ptl_dpb_hrd_params_present_flag != 0 {
-        Some(parse_profile_tier_level(
-            &mut r,
-            true,
-            sps_max_sublayers_minus1 as u32,
-        )?)
-    } else {
-        None
-    };
-    // sps_gdr_enabled_flag u(1) + sps_ref_pic_resampling_enabled_flag u(1)
-    // + optional sps_res_change_in_clvs_allowed_flag u(1).
-    let _sps_gdr_enabled_flag = r.u(1);
-    let sps_ref_pic_resampling_enabled_flag = r.u(1);
-    if sps_ref_pic_resampling_enabled_flag != 0 {
-        let _sps_res_change_in_clvs_allowed_flag = r.u(1);
-    }
-    let sps_pic_width_max_in_luma_samples = r.ue()?;
-    let sps_pic_height_max_in_luma_samples = r.ue()?;
-    let sps_conformance_window_flag = r.u(1);
-    if sps_conformance_window_flag != 0 {
-        // Four ue(v) offsets — walked, not stored.
-        let _l = r.ue()?;
-        let _rr = r.ue()?;
-        let _t = r.ue()?;
-        let _b = r.ue()?;
-    }
-    let sps_subpic_info_present_flag = r.u(1) as u8;
-    if sps_subpic_info_present_flag != 0 {
-        // Subpicture sub-structure is deferred — its u(v) fields
-        // depend on derived CTU geometry and would require the full
-        // subpic walk (7.3.2.4). Bridges that hit this fixture should
-        // fall back to a software path.
-        return Err(BitstreamError::unsupported(
-            "VVC SPS with sps_subpic_info_present_flag = 1 (subpicture signalling) \
-             not parsed in this round",
-        ));
-    }
-    let sps_bitdepth_minus8 = r.ue()?;
-    if sps_bitdepth_minus8 > 8 {
-        return Err(BitstreamError::invalid(format!(
-            "sps_bitdepth_minus8 = {sps_bitdepth_minus8} > 8 (BitDepth ≤ 16)"
-        )));
-    }
-    let sps_entropy_coding_sync_enabled_flag = r.u(1) as u8;
-    let sps_entry_point_offsets_present_flag = r.u(1) as u8;
-    let sps_log2_max_pic_order_cnt_lsb_minus4 = r.u(4) as u8;
-    if sps_log2_max_pic_order_cnt_lsb_minus4 > SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX {
-        return Err(BitstreamError::invalid(format!(
-            "sps_log2_max_pic_order_cnt_lsb_minus4 = {sps_log2_max_pic_order_cnt_lsb_minus4} > {SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX} (MaxPicOrderCntLsb ≤ 2^16)"
-        )));
-    }
-
-    Ok(VvcSps {
-        sps_seq_parameter_set_id,
-        sps_video_parameter_set_id,
-        sps_max_sublayers_minus1,
-        sps_chroma_format_idc,
-        sps_log2_ctu_size_minus5,
-        sps_ptl_dpb_hrd_params_present_flag,
-        profile_tier_level,
-        sps_pic_width_max_in_luma_samples,
-        sps_pic_height_max_in_luma_samples,
-        sps_subpic_info_present_flag,
-        sps_bitdepth_minus8,
-        sps_entropy_coding_sync_enabled_flag,
-        sps_entry_point_offsets_present_flag,
-        sps_log2_max_pic_order_cnt_lsb_minus4,
-    })
-}
+pub use params::{
+    parse_dpb_parameters, parse_general_timing_hrd, parse_ols_timing_hrd,
+    parse_ref_pic_list_struct, write_dpb_parameters, write_general_timing_hrd,
+    write_ols_timing_hrd, write_ref_pic_list_struct, VvcCpbSchedule, VvcDpbEntry, VvcDpbParameters,
+    VvcGeneralTimingHrd, VvcOlsTimingHrd, VvcOlsTimingHrdSublayer, VvcRefPicListStruct,
+    VvcRplsContext, VvcRplsEntry, VvcSublayerHrd, VVC_NUM_REF_ENTRIES_MAX,
+};
+pub use sps::{
+    parse_sps, write_sps, write_sps_nal, VvcChromaQpTable, VvcLadf, VvcSps, VvcSpsRangeExtension,
+    VvcSpsTimingHrd, VvcSubpicEntry, VvcSubpicInfo, SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
+    SPS_NUM_SUBPICS_MINUS1_MAX,
+};
 
 // ─────────────────────────── PPS RBSP (7.3.2.5) ─────────────────────────────
 
@@ -1839,150 +1638,6 @@ mod tests {
         }
     }
 
-    /// Build an Annex-B-style SPS NAL: 2-byte `nal_unit_header()`
-    /// (SPS, layer 0, temporal_id 0) followed by `rbsp`.
-    fn build_sps_nal(rbsp: &[u8]) -> Vec<u8> {
-        let hdr_b0: u8 = 0; // forbidden=0, reserved=0, layer_id=0
-        let hdr_b1: u8 = (NAL_TYPE_SPS << 3) | 1; // tid_plus1 = 1
-        let mut out = Vec::with_capacity(2 + rbsp.len());
-        out.push(hdr_b0);
-        out.push(hdr_b1);
-        out.extend_from_slice(rbsp);
-        out
-    }
-
-    #[test]
-    fn parse_sps_minimal_no_ptl_1080p_10bit() {
-        // RBSP bytes generated from the bit layout documented in the
-        // test source (sps_seq_parameter_set_id = 0, vps_id = 0,
-        // sublayers - 1 = 0, chroma 4:2:0, log2_ctu - 5 = 2 → CtbSize
-        // 128, ptl_dpb_present = 0, gdr = 0, ref_pic_resampling = 0,
-        // 1920×1080, no conformance window, no subpic, bit-depth = 10).
-        let rbsp = [0x00, 0x0c, 0x00, 0x0f, 0x02, 0x00, 0x43, 0x91, 0x80];
-        let nal = build_sps_nal(&rbsp);
-        let sps = parse_sps(&nal).expect("SPS should parse");
-        assert_eq!(sps.sps_seq_parameter_set_id, 0);
-        assert_eq!(sps.sps_video_parameter_set_id, 0);
-        assert_eq!(sps.sps_max_sublayers_minus1, 0);
-        assert_eq!(sps.sps_chroma_format_idc, 1);
-        assert_eq!(sps.sps_log2_ctu_size_minus5, 2);
-        assert_eq!(sps.ctb_log2_size_y(), 7);
-        assert_eq!(sps.ctb_size_y(), 128);
-        assert_eq!(sps.sps_ptl_dpb_hrd_params_present_flag, 0);
-        assert!(sps.profile_tier_level.is_none());
-        assert_eq!(sps.sps_pic_width_max_in_luma_samples, 1920);
-        assert_eq!(sps.sps_pic_height_max_in_luma_samples, 1080);
-        assert_eq!(sps.sps_subpic_info_present_flag, 0);
-        assert_eq!(sps.sps_bitdepth_minus8, 2);
-        assert_eq!(sps.bit_depth(), 10);
-        // Bit 65 = byte 8 bit 1 = 0, bit 66 = byte 8 bit 2 = 0,
-        // bits 67..70 = byte 8 bits 3..6 = 0000 (the 0x80 padding only
-        // sets bit 0). So the WPP / entry-point flags and the POC LSB
-        // width all decode to their canonical-zero defaults.
-        assert_eq!(sps.sps_entropy_coding_sync_enabled_flag, 0);
-        assert_eq!(sps.sps_entry_point_offsets_present_flag, 0);
-        assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 0);
-        assert_eq!(sps.poc_lsb_width(), 4);
-        assert_eq!(sps.max_pic_order_cnt_lsb(), 16);
-    }
-
-    #[test]
-    fn parse_sps_with_profile_tier_level_4k_main10() {
-        // Carries a full profile_tier_level(1, 2): general_profile_idc
-        // = 33 (Main 10), tier = 0, level_idc = 51 (5.1), frame_only =
-        // 1, multilayer = 0, gci_present_flag = 0 (zero-filled GCI
-        // alignment), ptl_sublayer_level_present_flag = [0 → i=0
-        // absent, 1 → i=1 present], sublayer_level_idc[1] = 35,
-        // ptl_num_sub_profiles = 2, sub_profile = [0xCAFEBABE,
-        // 0xDEADBEEF]. SPS continues with 3840×2160 max luma, a
-        // zero-offset conformance window, no subpic, bit-depth = 10.
-        let rbsp = [
-            0x23, 0x49, 0x42, 0x33, 0x80, 0x80, 0x23, 0x02, 0xca, 0xfe, 0xba, 0xbe, 0xde, 0xad,
-            0xbe, 0xef, 0xc0, 0x03, 0xc0, 0x40, 0x04, 0x38, 0xfc, 0xc0,
-        ];
-        let nal = build_sps_nal(&rbsp);
-        let sps = parse_sps(&nal).expect("SPS+PTL should parse");
-        assert_eq!(sps.sps_seq_parameter_set_id, 2);
-        assert_eq!(sps.sps_video_parameter_set_id, 3);
-        assert_eq!(sps.sps_max_sublayers_minus1, 2);
-        assert_eq!(sps.sps_chroma_format_idc, 1);
-        assert_eq!(sps.sps_log2_ctu_size_minus5, 0);
-        assert_eq!(sps.ctb_size_y(), 32);
-        assert_eq!(sps.sps_ptl_dpb_hrd_params_present_flag, 1);
-
-        let ptl = sps.profile_tier_level.as_ref().expect("PTL present");
-        assert_eq!(ptl.general_profile_idc, Some(33));
-        assert_eq!(ptl.general_tier_flag, Some(0));
-        assert_eq!(ptl.general_level_idc, 51);
-        assert_eq!(ptl.ptl_frame_only_constraint_flag, 1);
-        assert_eq!(ptl.ptl_multilayer_enabled_flag, 0);
-        // We stored low-to-high (after reversing the descending walk).
-        // i=0 not present, i=1 present.
-        assert_eq!(ptl.ptl_sublayer_level_present_flag, vec![0, 1]);
-        // Only i=1 present → exactly one sublayer_level_idc.
-        assert_eq!(ptl.sublayer_level_idc, vec![35]);
-        assert_eq!(
-            ptl.general_sub_profile_idc,
-            vec![0xCAFE_BABEu32, 0xDEAD_BEEFu32]
-        );
-
-        assert_eq!(sps.sps_pic_width_max_in_luma_samples, 3840);
-        assert_eq!(sps.sps_pic_height_max_in_luma_samples, 2160);
-        assert_eq!(sps.sps_subpic_info_present_flag, 0);
-        assert_eq!(sps.sps_bitdepth_minus8, 2);
-        assert_eq!(sps.bit_depth(), 10);
-        // The 4K fixture predates the WPP / entry-point / POC-LSB-width
-        // extension; the three new fields fall into the fixture's
-        // trailing padding bytes. Assert what the trailing zeros
-        // actually carry rather than guessing — the parser's contract
-        // is to decode whatever bits the spec says are there, and the
-        // fixture's `0xfc 0xc0` tail makes those three fields
-        // deterministic.
-        // The 4K fixture predates this round; its trailing bytes
-        // (`0xfc 0xc0`) happen to leave the three newly-walked fields
-        // sitting on zeros — verify that explicitly so a future tail
-        // tweak can't silently regress the decode.
-        assert_eq!(sps.sps_entropy_coding_sync_enabled_flag, 0);
-        assert_eq!(sps.sps_entry_point_offsets_present_flag, 0);
-        assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 0);
-        assert_eq!(sps.poc_lsb_width(), 4);
-        assert_eq!(sps.max_pic_order_cnt_lsb(), 16);
-    }
-
-    #[test]
-    fn parse_sps_rejects_subpic_info_present_for_now() {
-        // Same prefix as the no-PTL fixture but with
-        // sps_subpic_info_present_flag flipped to 1.
-        //
-        // sps_seq_parameter_set_id = 0 / vps = 0 / sublayers-1 = 0 /
-        // chroma 4:2:0 / log2_ctu - 5 = 2 / ptl_dpb_present = 0 / gdr
-        // = 0 / ref_pic_resampling = 0 / 1920×1080 / conformance
-        // window = 0 / subpic_info = 1 → parser must return
-        // Unsupported. The flag lives at absolute bit 61 (byte index
-        // 7, mask 0x04) — that's the `0x91 → 0x95` change vs the
-        // no-PTL fixture.
-        let rbsp = [0x00, 0x0c, 0x00, 0x0f, 0x02, 0x00, 0x43, 0x95, 0x80];
-        let nal = build_sps_nal(&rbsp);
-        let err = parse_sps(&nal).expect_err("subpic_info_present_flag=1 should be unsupported");
-        assert!(matches!(err, BitstreamError::Unsupported(_)));
-    }
-
-    #[test]
-    fn parse_sps_rejects_wrong_nal_type() {
-        // Build a PPS NAL header instead of SPS.
-        let mut nal = vec![0u8; 4];
-        nal[0] = 0;
-        nal[1] = (NAL_TYPE_PPS << 3) | 1;
-        let err = parse_sps(&nal).expect_err("PPS NAL must be rejected");
-        assert!(matches!(err, BitstreamError::InvalidData(_)));
-    }
-
-    #[test]
-    fn parse_sps_rejects_truncated() {
-        let err = parse_sps(&[0x00]).expect_err("1-byte input must error");
-        assert!(matches!(err, BitstreamError::UnexpectedEnd(_)));
-    }
-
     /// Build an Annex-B-style PPS NAL: 2-byte `nal_unit_header()`
     /// (PPS, layer 0, temporal_id 0) followed by `rbsp`.
     fn build_pps_nal(rbsp: &[u8]) -> Vec<u8> {
@@ -2493,20 +2148,13 @@ mod tests {
     /// read them.
     fn sps_with_poc_width(log2_max_poc_lsb_minus4: u8) -> VvcSps {
         VvcSps {
-            sps_seq_parameter_set_id: 0,
-            sps_video_parameter_set_id: 0,
-            sps_max_sublayers_minus1: 0,
             sps_chroma_format_idc: 1,
             sps_log2_ctu_size_minus5: 2,
-            sps_ptl_dpb_hrd_params_present_flag: 0,
-            profile_tier_level: None,
             sps_pic_width_max_in_luma_samples: 1920,
             sps_pic_height_max_in_luma_samples: 1080,
-            sps_subpic_info_present_flag: 0,
             sps_bitdepth_minus8: 2,
-            sps_entropy_coding_sync_enabled_flag: 0,
-            sps_entry_point_offsets_present_flag: 0,
             sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
+            ..Default::default()
         }
     }
 
@@ -2653,59 +2301,6 @@ mod tests {
         let err = parse_picture_header_with_sps(&nal, &sps)
             .expect_err("oversized ph_pic_parameter_set_id must be rejected");
         assert!(matches!(err, BitstreamError::InvalidData(_)));
-    }
-
-    #[test]
-    fn parse_sps_rejects_oversized_log2_max_pic_order_cnt_lsb() {
-        // sps_log2_max_pic_order_cnt_lsb_minus4 = 13 (one past the
-        // 0..=12 envelope dictated by `MaxPicOrderCntLsb ≤ 2^16`).
-        // Reuses the 1080p fixture and rewrites byte 8 so the u(4) PoC
-        // width field carries 13 = 0b1101 instead of 0.
-        //
-        // Byte 8 layout (8 bits = stream bits 64..71):
-        //   bit 64 = trailing 1 of sps_bitdepth_minus8 = 1 (mask 0x80)
-        //   bit 65 = sps_entropy_coding_sync_enabled_flag         (mask 0x40)
-        //   bit 66 = sps_entry_point_offsets_present_flag         (mask 0x20)
-        //   bits 67..70 = sps_log2_max_pic_order_cnt_lsb_minus4   (mask 0x1e)
-        // Setting bits 67..70 = 1101 → mask 0x1a → byte = 0x80 | 0x1a = 0x9a.
-        let rbsp = [0x00, 0x0c, 0x00, 0x0f, 0x02, 0x00, 0x43, 0x91, 0x9a];
-        let nal = build_sps_nal(&rbsp);
-        let err = parse_sps(&nal)
-            .expect_err("sps_log2_max_pic_order_cnt_lsb_minus4 = 13 must be rejected");
-        assert!(matches!(err, BitstreamError::InvalidData(_)));
-    }
-
-    #[test]
-    fn parse_sps_with_nonzero_log2_max_pic_order_cnt_lsb_round_trips() {
-        // Independent fixture construction: build the SPS RBSP with
-        // `BitWriter` so the POC width is deterministic (=8). Confirms
-        // the parser surfaces the exact value the encoder wrote.
-        use crate::bit_writer::BitWriter;
-        let mut w = BitWriter::new();
-        w.write_bits(0, 4); // sps_seq_parameter_set_id
-        w.write_bits(0, 4); // sps_video_parameter_set_id
-        w.write_bits(0, 3); // sps_max_sublayers_minus1
-        w.write_bits(1, 2); // sps_chroma_format_idc = 4:2:0
-        w.write_bits(2, 2); // sps_log2_ctu_size_minus5 = 2 (CTU 128)
-        w.write_bits(0, 1); // sps_ptl_dpb_hrd_params_present_flag
-        w.write_bits(0, 1); // sps_gdr_enabled_flag
-        w.write_bits(0, 1); // sps_ref_pic_resampling_enabled_flag
-        w.write_ue(1920).expect("width ue"); // sps_pic_width_max
-        w.write_ue(1080).expect("height ue"); // sps_pic_height_max
-        w.write_bits(0, 1); // sps_conformance_window_flag
-        w.write_bits(0, 1); // sps_subpic_info_present_flag
-        w.write_ue(2).expect("bitdepth ue"); // sps_bitdepth_minus8 = 2 (10-bit)
-        w.write_bits(1, 1); // sps_entropy_coding_sync_enabled_flag
-        w.write_bits(1, 1); // sps_entry_point_offsets_present_flag
-        w.write_bits(4, 4); // sps_log2_max_pic_order_cnt_lsb_minus4 = 4 → POC LSB u(8)
-        let rbsp = w.finish();
-        let nal = build_sps_nal(&rbsp);
-        let sps = parse_sps(&nal).expect("SPS round-trips through BitWriter");
-        assert_eq!(sps.sps_entropy_coding_sync_enabled_flag, 1);
-        assert_eq!(sps.sps_entry_point_offsets_present_flag, 1);
-        assert_eq!(sps.sps_log2_max_pic_order_cnt_lsb_minus4, 4);
-        assert_eq!(sps.poc_lsb_width(), 8);
-        assert_eq!(sps.max_pic_order_cnt_lsb(), 256);
     }
 
     #[test]

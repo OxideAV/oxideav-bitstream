@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- h266: complete SPS walk (§7.3.2.4) — `parse_sps` now retains every
+  syntax element of `seq_parameter_set_rbsp()` through
+  `rbsp_trailing_bits()` and `write_sps` / `write_sps_nal` are its
+  byte-exact inverses. New coverage: subpicture layout (geometry
+  inference incl. the same-size grid, treated-as-pic / loop-filter
+  flags, explicit id mapping), `dpb_parameters()` (§7.3.4),
+  `general_timing_hrd_parameters()` / `ols_timing_hrd_parameters()` /
+  `sublayer_hrd_parameters()` (§7.3.5) with CPB schedule lists,
+  `ref_pic_list_struct()` templates (§7.3.10, ST/LT/inter-layer
+  entries), chroma-QP mapping tables, all partition / coding-tool
+  flags, LADF, virtual boundaries, `sps_range_extension()`, verbatim
+  `sps_extension_data` retention and the opaque byte-aligned
+  `vui_payload()` block. §7.4 value ranges are enforced (`MaxDpbSize`,
+  `MaxSlicesPerAu`, `hrd_cpb_cnt_minus1 ≤ 31`, RPL bounds, …) so
+  hostile counts cannot drive unbounded loops. The DPB / HRD / RPLS
+  sub-structures live in a new public `h266::params` module for reuse
+  by the VPS walk.
+
+### Changed
+- h266: `VvcSps` is now the lossless full-walk representation —
+  presence flags that gated unparsed blocks
+  (`sps_ptl_dpb_hrd_params_present_flag`,
+  `sps_subpic_info_present_flag`) are replaced by the corresponding
+  `Option` fields, and subpicture streams no longer return
+  `Unsupported`.
 - h266: OPI + DCI RBSPs — `parse_opi` / `write_opi` / `write_opi_nal`
   (operating point information, §7.3.2.2) and `parse_dci` /
   `write_dci` / `write_dci_nal` (decoding capability information,

@@ -15,9 +15,33 @@
 use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::h266::{
     is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_picture_header,
-    parse_picture_header_with_sps, parse_pps, parse_sps, parse_vps, split_annex_b,
-    NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+    parse_picture_header_with_sps, parse_pps, parse_sps, parse_vps, split_annex_b, write_sps,
+    VvcChromaQpTable, VvcSps, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS,
+    NAL_TYPE_VPS,
 };
+
+/// A complete 1920x1080 10-bit 4:2:0 no-PTL SPS RBSP with the given
+/// POC-LSB width, produced through the crate's own byte-exact writer
+/// (§7.3.2.4 full walk).
+fn full_sps_rbsp(log2_max_poc_lsb_minus4: u8) -> Vec<u8> {
+    write_sps(&VvcSps {
+        sps_chroma_format_idc: 1,
+        sps_log2_ctu_size_minus5: 2,
+        sps_pic_width_max_in_luma_samples: 1920,
+        sps_pic_height_max_in_luma_samples: 1080,
+        sps_bitdepth_minus8: 2,
+        sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
+        sps_same_qp_table_for_chroma_flag: 1,
+        chroma_qp_tables: vec![VvcChromaQpTable {
+            sps_qp_table_start_minus26: 0,
+            points: vec![(0, 0)],
+        }],
+        sps_chroma_horizontal_collocated_flag: 1,
+        sps_chroma_vertical_collocated_flag: 1,
+        ..Default::default()
+    })
+    .expect("SPS writes")
+}
 
 /// Build a 2-byte VVC NAL header for `(nal_unit_type, nuh_layer_id,
 /// nuh_temporal_id_plus1)`. Forbidden + reserved zero bits are
@@ -83,11 +107,11 @@ fn walks_synthetic_au_with_vps_sps_pps_ph_idr() {
 
 #[test]
 fn walks_au_and_parses_sps_structural_fields() {
-    // VPS + SPS + IDR_W_RADL with a structural 1920×1080 10-bit
+    // VPS + SPS + IDR_W_RADL with a complete 1920×1080 10-bit
     // 4:2:0 / no-PTL SPS body. Demonstrates that a HW bridge can
     // run `split_annex_b` → `parse_nal_header` → `parse_sps` to
     // recover the geometry fields it needs.
-    let sps_rbsp: [u8; 9] = [0x00, 0x0c, 0x00, 0x0f, 0x02, 0x00, 0x43, 0x91, 0x80];
+    let sps_rbsp = full_sps_rbsp(0);
     let mut sps_nal = Vec::new();
     sps_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_SPS, 0, 1));
     sps_nal.extend_from_slice(&sps_rbsp);
@@ -245,25 +269,9 @@ fn walks_au_and_parses_picture_header_with_sps_context() {
     // and recover the POC LSB the GPU needs for reference-picture-list
     // management, not just the prefix flags.
     //
-    // Build the SPS RBSP via `BitWriter` (the canonical inverse path):
-    let mut w = BitWriter::new();
-    w.write_bits(0, 4); // sps_seq_parameter_set_id
-    w.write_bits(0, 4); // sps_video_parameter_set_id
-    w.write_bits(0, 3); // sps_max_sublayers_minus1
-    w.write_bits(1, 2); // sps_chroma_format_idc = 4:2:0
-    w.write_bits(2, 2); // sps_log2_ctu_size_minus5 = 2
-    w.write_bits(0, 1); // sps_ptl_dpb_hrd_params_present_flag
-    w.write_bits(0, 1); // sps_gdr_enabled_flag
-    w.write_bits(0, 1); // sps_ref_pic_resampling_enabled_flag
-    w.write_ue(1920).expect("width ue");
-    w.write_ue(1080).expect("height ue");
-    w.write_bits(0, 1); // sps_conformance_window_flag
-    w.write_bits(0, 1); // sps_subpic_info_present_flag
-    w.write_ue(2).expect("bitdepth ue"); // sps_bitdepth_minus8 = 2 (10-bit)
-    w.write_bits(0, 1); // sps_entropy_coding_sync_enabled_flag
-    w.write_bits(0, 1); // sps_entry_point_offsets_present_flag
-    w.write_bits(4, 4); // sps_log2_max_pic_order_cnt_lsb_minus4 = 4 → POC LSB u(8)
-    let sps_rbsp = w.finish();
+    // Build the SPS RBSP via the crate's own writer (the canonical
+    // inverse path), with sps_log2_max_pic_order_cnt_lsb_minus4 = 4.
+    let sps_rbsp = full_sps_rbsp(4);
 
     let mut sps_nal_body = Vec::new();
     sps_nal_body.extend_from_slice(&vvc_hdr(NAL_TYPE_SPS, 0, 1));
