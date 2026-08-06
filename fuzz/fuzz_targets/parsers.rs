@@ -36,9 +36,13 @@
 //! * VP8     — `parse_frame_header`, `parse_keyframe`.
 //! * VP9     — `parse_uncompressed_header`.
 //!
-//! No round-trip assertions live here — the entry points are one-way
-//! parsers. The invariant under test is purely: *no panic on any
-//! byte sequence*.
+//! On top of the no-panic invariant, every parse→write pair asserts
+//! its fixed point whenever a parse succeeds: H.264 SPS/PPS/SEI, HEVC
+//! VPS/SPS/PPS + typed SEI (incl. the HRD-coupled BP/PT pair against
+//! a recovered SPS-VUI context), the H.266 full-walk SPS/PPS, APS,
+//! OPI/DCI and typed Annex-D SEI payloads, the AV1 metadata OBU +
+//! sequence header, the VP9 keyframe uncompressed header, and the
+//! length-prefixed framing converters.
 
 use libfuzzer_sys::fuzz_target;
 
@@ -71,6 +75,10 @@ fuzz_target!(|data: &[u8]| {
     // re-parse must reproduce it exactly.
     drive_h264_writer_roundtrips(data);
     drive_hevc_writer_roundtrips(data);
+    drive_hevc_typed_sei_roundtrips(data);
+    drive_h266_sps_pps_roundtrips(data);
+    drive_av1_sequence_header_roundtrip(data);
+    drive_vp9_header_roundtrip(data);
     drive_h266_aps_roundtrips(data);
     drive_h266_opi_dci_roundtrips(data);
     drive_h266_sei_roundtrips(data);
@@ -327,6 +335,106 @@ fn drive_hevc_writer_roundtrips(data: &[u8]) {
             ),
             Err(e) => panic!("HEVC PPS writer rejected parser output: {e:?}"),
         }
+    }
+}
+
+/// H.266 full-walk SPS / PPS parse→write→parse fixed points. The
+/// full walks retain every syntax element, so the writer must accept
+/// every parsed struct and re-parsing its NAL must reproduce the
+/// struct exactly.
+fn drive_h266_sps_pps_roundtrips(data: &[u8]) {
+    if let Ok(sps) = h266::parse_sps(data) {
+        let nal = h266::sps::write_sps_nal(&sps).expect("writer accepts every parsed H.266 SPS");
+        let re = h266::parse_sps(&nal).expect("written H.266 SPS re-parses");
+        assert_eq!(re, sps, "H.266 SPS parse→write→parse fixed point");
+    }
+    if let Ok(pps) = h266::parse_pps(data) {
+        let nal = h266::pps::write_pps_nal(&pps).expect("writer accepts every parsed H.266 PPS");
+        let re = h266::parse_pps(&nal).expect("written H.266 PPS re-parses");
+        assert_eq!(re, pps, "H.266 PPS parse→write→parse fixed point");
+    }
+}
+
+/// HEVC typed-SEI decode→encode→decode fixed points: the context-free
+/// families through `encode_sei_message`, and the HRD-coupled BP / PT
+/// pair against an HRD context recovered from an SPS parsed out of a
+/// prefix of the same input.
+fn drive_hevc_typed_sei_roundtrips(data: &[u8]) {
+    if let Ok(msgs) = hevc::sei::parse_sei_rbsp(data) {
+        for msg in &msgs {
+            if let Ok(decoded) = hevc::sei::decode_sei_message(msg) {
+                let enc = hevc::sei::encode_sei_message(&decoded)
+                    .expect("typed encoder accepts every decoded HEVC SEI");
+                let re = hevc::sei::decode_sei_message(&enc).expect("re-decodes");
+                assert_eq!(re, decoded, "HEVC typed SEI decode→encode→decode fixed point");
+            }
+        }
+    }
+    // BP / PT with an SPS-VUI HRD context from the input prefix.
+    let mid = data.len() / 2;
+    let (head, tail) = data.split_at(mid);
+    let Ok(sps) = hevc::parse_sps_nal(head) else {
+        return;
+    };
+    let Some(vui) = &sps.vui else { return };
+    let Some(hrd) = &vui.hrd_parameters else {
+        return;
+    };
+    let ctx = hevc::sei::SeiHrdContext {
+        hrd,
+        sub_layer_id: 0,
+        frame_field_info_present_flag: vui.frame_field_info_present_flag,
+    };
+    let Ok(msgs) = hevc::sei::parse_sei_rbsp(tail) else {
+        return;
+    };
+    for msg in &msgs {
+        if msg.payload_type == hevc::sei::SEI_TYPE_BUFFERING_PERIOD {
+            if let Ok(bp) = hevc::sei::decode_buffering_period(msg, &ctx) {
+                let enc = hevc::sei::encode_buffering_period(&bp, &ctx)
+                    .expect("BP encoder accepts every decoded buffering period");
+                let re = hevc::sei::decode_buffering_period(&enc, &ctx).expect("BP re-decodes");
+                assert_eq!(re, bp, "HEVC BP decode→encode→decode fixed point");
+            }
+        }
+        if msg.payload_type == hevc::sei::SEI_TYPE_PIC_TIMING {
+            if let Ok(pt) = hevc::sei::decode_pic_timing(msg, &ctx) {
+                let enc = hevc::sei::encode_pic_timing(&pt, &ctx)
+                    .expect("PT encoder accepts every decoded pic timing");
+                let re = hevc::sei::decode_pic_timing(&enc, &ctx).expect("PT re-decodes");
+                assert_eq!(re, pt, "HEVC PT decode→encode→decode fixed point");
+            }
+        }
+    }
+}
+
+/// AV1 sequence-header parse→write→parse fixed point (the parse
+/// ignores the payload's trailing bits, so the invariant is on the
+/// struct, not the raw bytes).
+fn drive_av1_sequence_header_roundtrip(data: &[u8]) {
+    if let Ok(sh) = av1::parse_sequence_header(data) {
+        let payload = av1::write_sequence_header(&sh)
+            .expect("writer accepts every parsed AV1 sequence header");
+        let re = av1::parse_sequence_header(&payload).expect("written sequence header re-parses");
+        assert_eq!(re, sh, "AV1 sequence-header parse→write→parse fixed point");
+    }
+}
+
+/// VP9 keyframe uncompressed-header parse→write→parse fixed point.
+/// Emission is canonical, so the invariant is on the struct with the
+/// header size recomputed for the canonical bytes.
+fn drive_vp9_header_roundtrip(data: &[u8]) {
+    if let Ok(h) = vp9::parse_uncompressed_header(data) {
+        let bytes = vp9::write_uncompressed_header(&h)
+            .expect("writer accepts every parsed VP9 keyframe header");
+        // The re-parse needs the input to be at least 8 bytes; pad the
+        // canonical header with zero tail bytes.
+        let mut padded = bytes.clone();
+        padded.resize(padded.len().max(8) + 4, 0);
+        let re = vp9::parse_uncompressed_header(&padded).expect("written VP9 header re-parses");
+        let mut expect = h.clone();
+        expect.uncompressed_header_size = bytes.len() as u32;
+        assert_eq!(re, expect, "VP9 header parse→write→parse fixed point");
     }
 }
 

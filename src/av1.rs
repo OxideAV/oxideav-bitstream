@@ -925,6 +925,11 @@ pub fn parse_sequence_header(payload: &[u8]) -> Result<Av1SequenceHeader, Bitstr
                 time_scale: r.u(32),
                 num_ticks_per_picture_minus_1: None,
             };
+            if t.num_units_in_display_tick == 0 || t.time_scale == 0 {
+                return Err(BitstreamError::invalid(
+                    "timing_info: num_units_in_display_tick and time_scale must be > 0 (6.4.3)",
+                ));
+            }
             let equal_picture_interval = r.u(1) != 0;
             if equal_picture_interval {
                 // uvlc() per §4.10.3 — shared BitReader descriptor.

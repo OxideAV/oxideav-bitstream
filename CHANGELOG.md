@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- fuzz: the parsers target now asserts parse→write fixed points for
+  the H.266 full-walk SPS/PPS, the HEVC typed SEI families (context
+  free via `encode_sei_message`, and BP/PT against an SPS-VUI HRD
+  context recovered from an input prefix), the AV1 sequence header
+  and the VP9 keyframe uncompressed header. `parse_sequence_header`
+  additionally rejects zero `timing_info` clock fields (§6.4.3) so
+  the writer inverse holds over the full accepted envelope.
 - vp9: `write_uncompressed_header` — inverse of
   `parse_uncompressed_header` over the keyframe envelope (§6.2 incl.
   colour config, loop-filter/quant/segmentation blocks, tile info and
