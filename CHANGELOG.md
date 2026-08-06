@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- hevc: typed SEI write direction — `encode_sei_message` is the
+  inverse of `decode_sei_message` for every context-free family
+  (MDCV, CLL, recovery point, ITU-T T.35, user-data-unregistered,
+  raw pass-through), and the HRD-coupled pair gains typed decode +
+  encode: `decode_buffering_period` / `encode_buffering_period`
+  (§D.2.2 — IRAP CPB params, NAL/VCL initial-delay lists sized by
+  `CpbCnt`, alt delays, the `use_alt_cpb_params_flag`
+  payload-extension slot) and `decode_pic_timing` /
+  `encode_pic_timing` (§D.2.3 — frame-field info, AU/DPB delays,
+  sub-picture decoding-unit lists with common or per-DU removal
+  increments), both against a `SeiHrdContext` carrying the SPS-VUI
+  `hrd_parameters()` + sub-layer id + `frame_field_info_present_flag`.
+  Hostile `num_decoding_units_minus1` counts are bounded by the
+  remaining payload.
 - h266: complete PPS walk (§7.3.2.5) — `parse_pps` now retains every
   syntax element of `pic_parameter_set_rbsp()` through
   `rbsp_trailing_bits()` and `write_pps` / `write_pps_nal` are its
