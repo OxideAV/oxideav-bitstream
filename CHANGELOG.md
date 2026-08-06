@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- vp9: `write_uncompressed_header` — inverse of
+  `parse_uncompressed_header` over the keyframe envelope (§6.2 incl.
+  colour config, loop-filter/quant/segmentation blocks, tile info and
+  the byte-alignment padding), byte-exact on the crate's IVF fixture.
+
+### Fixed
+- vp9: the keyframe walk skipped the §6.2 `refresh_frame_context` /
+  `frame_parallel_decoding_mode` pair and the raw `frame_context_idx`
+  f(2), shifting every later field (loop filter, quant, segmentation,
+  tiles, `header_size_in_bytes`) by four bits. The fixture
+  expectations pinned that misparse and are re-pinned to the correct
+  walk (base_q 37 / loop-filter 2 / 186-byte compressed header, with
+  the encoder explicitly coding the spec-default ref deltas
+  `[1, 0, -1, -1]`). The raw coded index is retained on a new
+  `coded_frame_context_idx` field; the derived `frame_context_idx`
+  stays 0 per the intra reset.
 - av1: `write_sequence_header` — byte-exact inverse of
   `parse_sequence_header` over the single-operating-point envelope
   (§5.5 incl. `trailing_bits()`), pinned byte-exact on the crate's
