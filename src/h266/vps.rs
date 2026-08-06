@@ -225,20 +225,20 @@ fn derive_ols_info(vps: &VvcVps) -> Result<OlsInfo, BitstreamError> {
         2 => {
             let total = vps.vps_ols_output_layer_flags.len() + 1;
             // dependencyFlag transitive closure (eq. (28)).
-            let mut dep = vec![vec![false; n]; n];
-            for i in 0..n {
-                for j in 0..i {
-                    dep[i][j] = *vps.layers[i].vps_direct_ref_layer_flag.get(j).unwrap_or(&0) != 0;
+            let mut dep: Vec<Vec<bool>> = Vec::with_capacity(n);
+            for (i, layer) in vps.layers.iter().enumerate() {
+                let mut row = vec![false; n];
+                for (j, slot) in row.iter_mut().enumerate().take(i) {
+                    *slot = *layer.vps_direct_ref_layer_flag.get(j).unwrap_or(&0) != 0;
                 }
-                for k in 0..i {
-                    if *vps.layers[i].vps_direct_ref_layer_flag.get(k).unwrap_or(&0) != 0 {
-                        for j in 0..n {
-                            if dep[k][j] {
-                                dep[i][j] = true;
-                            }
+                for (k, dep_row) in dep.iter().enumerate().take(i) {
+                    if *layer.vps_direct_ref_layer_flag.get(k).unwrap_or(&0) != 0 {
+                        for (slot, &transitive) in row.iter_mut().zip(dep_row.iter()) {
+                            *slot |= transitive;
                         }
                     }
                 }
+                dep.push(row);
             }
             let mut multi = 0usize;
             for row in &vps.vps_ols_output_layer_flags {
