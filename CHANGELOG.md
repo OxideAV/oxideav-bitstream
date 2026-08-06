@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.2...v0.0.3) - 2026-08-06
+
+### Other
+
+- iterator-shape the VPS dependency-closure loops for clippy 1.95
+- complete VPS walk (7.3.2.3) + byte-exact writer — multi-layer dependency block, OLS modes 0/1/2 with 7.4.3.3 derivations, PTL list, per-OLS DPB + timing/HRD; VPS fixed point in fuzz
+- H.266 SPS/PPS complete + byte-exact writers, HEVC typed SEI encode incl. BP/PT, AV1 sequence-header + VP9 keyframe writers, fuzz fixed-point roster
+- H.266 SPS/PPS + HEVC typed-SEI/BP/PT + AV1 sequence-header + VP9 header fixed points in parsers target; av1 timing_info zero-clock guard
+- keyframe uncompressed-header writer, byte-exact on the IVF fixture; fix 4-bit misparse (refresh_frame_context pair + raw frame_context_idx were skipped) and re-pin fixture expectations
+- sequence-header OBU writer, byte-exact on the keyframe fixture; lossless timing/colour-description retention + 6.4.2 identity-branch fix
+- typed SEI encoders + HRD-coupled BP/PT decode+encode against a SeiHrdContext (D.2.2/D.2.3 — IRAP CPB params, alt delays, use_alt extension slot, decoding-unit lists)
+- complete PPS walk (7.3.2.5) + byte-exact writer — tile grid + rectangular-slice layout via replayed 6.5.1 derivations, chroma/deblocking blocks, bounded by Table A.2 limits
+- complete SPS walk (7.3.2.4) + byte-exact writer — subpics, DPB, HRD, RPL templates, chroma-QP tables, range extension, opaque VUI block
+- H.266 writer-surface cell — OPI/DCI/APS/AUD/SEI byte-exact, SPS/PPS writers still gated on structural parses
+- OPI + DCI parse + byte-exact writers on a lossless profile_tier_level/GCI walk; fuzz fixed points
+- HEVC writer + H.266 APS/SEI fixed points in parsers target; fix two H.266 SEI truncation soundness holes (zero-fill decode, ue-at-end phantom read); reject reserved max_sub_layers 7
+- SEI framing (7.3.6) + complete Annex-D payload set — BP/PT/DUI with context, nesting, SLI, manifest, prefix indication, CREI; decode + byte-exact encode
+- APS family (7.3.2.6) — ALF + LMCS + scaling-list payloads, parse + byte-exact writers, spec-range enforcement
+- byte-exact VPS/SPS/PPS writers on a lossless parse (PTL constraint/sub-layer bits, raw ST-RPS coding, ordering tables, cprms flags retained); fixture-pinned
+- complete VPS walk (7.3.2.1) — layer sets, timing info, HRD list with cprms inheritance
+- extend parsers target to SEI/metadata/framing + fixed-point invariants; README refresh
+- SEI module (7.3.5 framing + HDR payloads) + fuzz-found CtbLog2SizeY shift-overflow fix
+- Annex-B <-> length-prefixed framing converters
+- metadata OBU family (5.8) — parse + write for all five registered types
+- full SPS/PPS walk — scaling lists, PCM, ST-RPS (7.4.8 derivation), LT-RPS, VUI/HRD, tiles, range extensions
+- byte-exact SPS/PPS writers (parse->write pinned on both fixtures)
+- SEI family — sei_rbsp/sei_message framing + 5 typed payload decoders
+- full SPS/PPS walk — scaling lists (7.3.2.1.1.1) + VUI/HRD (Annex E)
+- untrack Cargo.lock (+anchored .gitignore); neutral wording in provenance comments
+- add CI / crates.io / docs.rs / MIT-license badges
+- refresh to current status, drop per-round changelog cruft
+- add parsers fuzz target; fix H.264/HEVC SPS log2_max panic
+- AV1 §4.10.3 uvlc() + §4.10.4 le(n) — §4.10 descriptor family complete
+- AV1 §4.10.6 su(n) signed integer descriptor
+- ns(n) — AV1 §4.10.7 non-symmetric unsigned
+- peek_bits_u64 — 64-bit non-advancing peek
+- access unit delimiter parse + write
+- neutral wording in ivf.rs module doc
+- write_header + write_frame + write_all — muxer inverse of the demuxer
+- shared ebsp_to_rbsp + new rbsp_to_ebsp inverse
+- SPS-context picture-header parser (ph_pic_order_cnt_lsb + ph_recovery_poc_cnt) plus three new SPS fields
+- structural picture-header prefix parser (7.3.2.7 / 7.3.2.8)
+- i(n), te(v), signed_magnitude, read_bytes + write inverses
+
 ### Added
 - h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
   syntax element of `video_parameter_set_rbsp()` including the
