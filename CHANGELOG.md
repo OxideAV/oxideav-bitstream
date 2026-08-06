@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
+  syntax element of `video_parameter_set_rbsp()` including the
+  multi-layer machinery (inter-layer dependency block, OLS modes
+  0/1/2 with the §7.4.3.3 `TotalNumOlss` / `NumMultiLayerOlss`
+  derivations and the mode-2 reference-layer transitive closure, the
+  PTL list with per-slot max-tid, per-multi-layer-OLS DPB sizing and
+  the OLS timing/HRD list), and `write_vps` / `write_vps_nal` are its
+  byte-exact inverses. Single-layer VPSs — previously cut short after
+  `vps_layer_id[0]` — now walk their PTL slot, extension bits and
+  trailing bits too. `VvcVps` is the lossless representation
+  (`layers` / `ptls` / `dpb_params` / `ols_dpbs` / `timing_hrd`
+  replace the old prefix-only fields).
 - fuzz: the parsers target now asserts parse→write fixed points for
   the H.266 full-walk SPS/PPS, the HEVC typed SEI families (context
   free via `encode_sei_message`, and BP/PT against an SPS-VUI HRD

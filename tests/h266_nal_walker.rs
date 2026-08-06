@@ -16,8 +16,9 @@ use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::h266::{
     is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_picture_header,
     parse_picture_header_with_sps, parse_pps, parse_sps, parse_vps, split_annex_b, write_pps,
-    write_sps, VvcChromaQpTable, VvcPps, VvcSps, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS,
-    NAL_TYPE_SPS, NAL_TYPE_VPS,
+    write_sps, write_vps, VvcChromaQpTable, VvcPps, VvcProfileTierLevel, VvcSps, VvcVps,
+    VvcVpsLayer, VvcVpsPtl, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS,
+    NAL_TYPE_VPS,
 };
 
 /// A complete 1920x1080 10-bit 4:2:0 no-PTL SPS RBSP with the given
@@ -187,12 +188,41 @@ fn walks_au_and_parses_pps_structural_fields() {
 
 #[test]
 fn walks_au_and_parses_vps_structural_fields() {
-    // VPS + SPS + IDR_W_RADL where the VPS body carries the minimal
-    // single-layer structural prefix (vps_id = 1, max_layers_minus1 =
-    // 0, max_sublayers_minus1 = 0, vps_layer_id[0] = 0). Demonstrates
+    // VPS + SPS + IDR_W_RADL where the VPS body carries a complete
+    // single-layer VPS (vps_id = 1, one layer, one inferred PTL slot),
+    // built through the crate's own byte-exact writer. Demonstrates
     // that a HW bridge can run split_annex_b -> parse_nal_header ->
     // parse_vps to recover the layer / sublayer count it needs.
-    let vps_rbsp: [u8; 3] = [0x10, 0x00, 0x00];
+    let vps_rbsp = write_vps(&VvcVps {
+        vps_video_parameter_set_id: 1,
+        vps_default_ptl_dpb_hrd_max_tid_flag: 1,
+        vps_all_independent_layers_flag: 1,
+        layers: vec![VvcVpsLayer {
+            vps_independent_layer_flag: 1,
+            ..Default::default()
+        }],
+        vps_each_layer_is_an_ols_flag: 1,
+        vps_ols_mode_idc: 2,
+        ptls: vec![VvcVpsPtl {
+            vps_pt_present_flag: 1,
+            vps_ptl_max_tid: 0,
+            ptl: VvcProfileTierLevel {
+                general_profile_idc: Some(1),
+                general_tier_flag: Some(0),
+                general_level_idc: 51,
+                ptl_frame_only_constraint_flag: 1,
+                ptl_multilayer_enabled_flag: 0,
+                ptl_sublayer_level_present_flag: vec![],
+                sublayer_level_idc: vec![],
+                general_sub_profile_idc: vec![],
+                gci_present_flag: false,
+                gci_bits: vec![],
+            },
+        }],
+        vps_ols_ptl_idx: vec![0],
+        ..Default::default()
+    })
+    .expect("VPS writes");
     let mut vps_nal = Vec::new();
     vps_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_VPS, 0, 1));
     vps_nal.extend_from_slice(&vps_rbsp);
@@ -213,9 +243,10 @@ fn walks_au_and_parses_vps_structural_fields() {
 
     let vps = parse_vps(vps_body).expect("VPS parses");
     assert_eq!(vps.vps_video_parameter_set_id, 1);
-    assert_eq!(vps.vps_max_layers_minus1, 0);
+    assert_eq!(vps.vps_max_layers_minus1(), 0);
     assert_eq!(vps.vps_max_sublayers_minus1, 0);
-    assert_eq!(vps.vps_layer_id, vec![0]);
+    assert_eq!(vps.layer_ids(), vec![0]);
+    assert_eq!(vps.ptls.len(), 1);
 }
 
 #[test]

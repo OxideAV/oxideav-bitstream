@@ -33,9 +33,9 @@ three HW bridges share, without the SW-codec baggage.
 | - | - | - | - | - |
 | Annex-B / OBU framing | yes | yes | yes | yes (leb128 sizes, OBU walker + emitter) |
 | NAL header decode | yes | yes | yes | n/a |
-| Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | **complete** — scaling lists (§7.3.2.1.1.1) + full VUI/HRD (Annex E) | **complete** — scaling lists (§7.3.4), PCM, ST-RPS w/ §7.4.8 inter-set derivation, LT-RPS, VUI/HRD (§E.2.1–E.2.3), range extension | structural VPS (7.3.2.3, single-layer) + **complete SPS** (7.3.2.4 — subpics, DPB, timing/HRD, RPL templates, chroma-QP tables, range extension, opaque VUI block) | yes (+ single-op sequence-header writer) |
+| Sequence header (SPS / VPS+SPS / Sequence-Header OBU) | **complete** — scaling lists (§7.3.2.1.1.1) + full VUI/HRD (Annex E) | **complete** — scaling lists (§7.3.4), PCM, ST-RPS w/ §7.4.8 inter-set derivation, LT-RPS, VUI/HRD (§E.2.1–E.2.3), range extension | **complete VPS** (7.3.2.3 — multi-layer OLS/DPB/HRD, §7.4.3.3 derivations) + **complete SPS** (7.3.2.4 — subpics, DPB, timing/HRD, RPL templates, chroma-QP tables, range extension, opaque VUI block) | yes (+ single-op sequence-header writer) |
 | Picture parameter set (PPS / Frame-Header OBU) | **complete** incl. scaling lists via `parse_pps_with_sps` | **complete** — tiles, WPP, scaling lists, range extension | **complete PPS** (7.3.2.5 — tile grid + rectangular-slice layout via the §6.5.1 derivations) + PH structural prefix (7.3.2.8) plus `parse_picture_header_with_sps` through `ph_recovery_poc_cnt` | yes |
-| SPS/PPS **writers** (byte-exact parse→write inverses) | yes — pinned byte-exact on both fixtures | yes — VPS+SPS+PPS, pinned byte-exact on the fixture (lossless PTL / ST-RPS-coding / ordering-info retention) | **SPS + PPS byte-exact** on their complete walks, plus OPI / DCI / APS / AUD / SEI (incl. a lossless `profile_tier_level`/GCI walk) | sequence-header OBU writer, byte-exact on the fixture |
+| SPS/PPS **writers** (byte-exact parse→write inverses) | yes — pinned byte-exact on both fixtures | yes — VPS+SPS+PPS, pinned byte-exact on the fixture (lossless PTL / ST-RPS-coding / ordering-info retention) | **VPS + SPS + PPS byte-exact** on their complete walks, plus OPI / DCI / APS / AUD / SEI (incl. a lossless `profile_tier_level`/GCI walk) | sequence-header OBU writer, byte-exact on the fixture |
 | SEI / metadata | framing (§7.3.2.3) + buffering_period / pic_timing / itu_t_t35 / user_data_unregistered / recovery_point (§D.1), writer included | framing (§7.3.5) + typed decode **and encode**: HDR payloads (MDCV/CLL), t35, unregistered, recovery point, plus HRD-coupled buffering_period / pic_timing (§D.2.2/§D.2.3) against an `SeiHrdContext` | framing (§7.3.6) + **all** Annex-D payloads (BP / PT / DUI / nesting / SLI / manifest / prefix indication / CREI), decode + byte-exact encode; APS families (ALF / LMCS / scaling lists) parse + byte-exact write | metadata OBU §5.8 — HDR CLL/MDCV, scalability structure, ITU-T T.35, timecode; parse + write |
 | Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
 | Access unit delimiter (AUD) parse + write | yes (`primary_pic_type` u(3)) | yes (`pic_type` u(3), incl. reserved-value pass-through) | yes (`aud_irap_or_gdr_flag` u(1) + `aud_pic_type` u(3), incl. reserved-value pass-through) | n/a (OBU framing handles AU boundaries) |
@@ -76,13 +76,15 @@ src/
 │                    # (re-exports ebsp_to_rbsp from nal)
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
 │                    # (re-exports ebsp_to_rbsp from nal)
-├── h266.rs          # H.266 Annex-B walker + NAL header + structural VPS +
+├── h266.rs          # H.266 Annex-B walker + NAL header +
 │                    # picture-header structural prefix (7.3.2.8) +
 │                    # OPI / DCI parse + byte-exact write (lossless PTL/GCI)
 │                    # (re-exports ebsp_to_rbsp from nal)
 ├── h266/params.rs   # H.266 shared sub-structures: dpb_parameters (7.3.4),
 │                    # general/OLS timing HRD (7.3.5), ref_pic_list_struct
 │                    # (7.3.10) — parse + byte-exact write
+├── h266/vps.rs      # H.266 complete VPS walk (7.3.2.3, §7.4.3.3 OLS
+│                    # derivations) + byte-exact writer
 ├── h266/sps.rs      # H.266 complete SPS walk (7.3.2.4) + byte-exact writer
 ├── h266/pps.rs      # H.266 complete PPS walk (7.3.2.5, §6.5.1 tile/slice
 │                    # derivations) + byte-exact writer

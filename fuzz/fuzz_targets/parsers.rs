@@ -338,11 +338,16 @@ fn drive_hevc_writer_roundtrips(data: &[u8]) {
     }
 }
 
-/// H.266 full-walk SPS / PPS parse→write→parse fixed points. The
+/// H.266 full-walk VPS / SPS / PPS parse→write→parse fixed points. The
 /// full walks retain every syntax element, so the writer must accept
 /// every parsed struct and re-parsing its NAL must reproduce the
 /// struct exactly.
 fn drive_h266_sps_pps_roundtrips(data: &[u8]) {
+    if let Ok(vps) = h266::parse_vps(data) {
+        let nal = h266::vps::write_vps_nal(&vps).expect("writer accepts every parsed H.266 VPS");
+        let re = h266::parse_vps(&nal).expect("written H.266 VPS re-parses");
+        assert_eq!(re, vps, "H.266 VPS parse→write→parse fixed point");
+    }
     if let Ok(sps) = h266::parse_sps(data) {
         let nal = h266::sps::write_sps_nal(&sps).expect("writer accepts every parsed H.266 SPS");
         let re = h266::parse_sps(&nal).expect("written H.266 SPS re-parses");
