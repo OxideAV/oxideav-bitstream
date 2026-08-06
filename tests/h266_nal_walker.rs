@@ -15,9 +15,9 @@
 use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::h266::{
     is_irap, is_parameter_set, is_vcl, parse_nal_header, parse_picture_header,
-    parse_picture_header_with_sps, parse_pps, parse_sps, parse_vps, split_annex_b, write_sps,
-    VvcChromaQpTable, VvcSps, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS, NAL_TYPE_SPS,
-    NAL_TYPE_VPS,
+    parse_picture_header_with_sps, parse_pps, parse_sps, parse_vps, split_annex_b, write_pps,
+    write_sps, VvcChromaQpTable, VvcPps, VvcSps, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PH, NAL_TYPE_PPS,
+    NAL_TYPE_SPS, NAL_TYPE_VPS,
 };
 
 /// A complete 1920x1080 10-bit 4:2:0 no-PTL SPS RBSP with the given
@@ -140,12 +140,20 @@ fn walks_au_and_parses_sps_structural_fields() {
 
 #[test]
 fn walks_au_and_parses_pps_structural_fields() {
-    // VPS + SPS + PPS + IDR_W_RADL with a structural PPS body
+    // VPS + SPS + PPS + IDR_W_RADL with a complete PPS body
     // (64×32, no conformance/scaling windows, output_flag_present = 1,
-    // no_pic_partition = 1, subpic_id_mapping = 0). Demonstrates that
-    // a HW bridge can run `split_annex_b` → `parse_nal_header` →
-    // `parse_pps` to recover the per-picture geometry fields.
-    let pps_rbsp: [u8; 6] = [0x00, 0x00, 0x41, 0x04, 0x26, 0x80];
+    // no_pic_partition = 1, no subpic id mapping), built through the
+    // crate's own byte-exact writer. Demonstrates that a HW bridge can
+    // run `split_annex_b` → `parse_nal_header` → `parse_pps` to
+    // recover the per-picture geometry fields.
+    let pps_rbsp = write_pps(&VvcPps {
+        pps_pic_width_in_luma_samples: 64,
+        pps_pic_height_in_luma_samples: 32,
+        pps_output_flag_present_flag: 1,
+        pps_no_pic_partition_flag: 1,
+        ..Default::default()
+    })
+    .expect("PPS writes");
     let mut pps_nal = Vec::new();
     pps_nal.extend_from_slice(&vvc_hdr(NAL_TYPE_PPS, 0, 1));
     pps_nal.extend_from_slice(&pps_rbsp);
@@ -170,11 +178,11 @@ fn walks_au_and_parses_pps_structural_fields() {
     assert_eq!(pps.pps_seq_parameter_set_id, 0);
     assert_eq!(pps.pps_pic_width_in_luma_samples, 64);
     assert_eq!(pps.pps_pic_height_in_luma_samples, 32);
-    assert_eq!(pps.pps_conformance_window_flag, 0);
-    assert_eq!(pps.pps_scaling_window_explicit_signalling_flag, 0);
+    assert!(pps.pps_conf_win_offsets.is_none());
+    assert!(pps.pps_scaling_win_offsets.is_none());
     assert_eq!(pps.pps_output_flag_present_flag, 1);
     assert_eq!(pps.pps_no_pic_partition_flag, 1);
-    assert_eq!(pps.pps_subpic_id_mapping_present_flag, 0);
+    assert!(pps.subpic_id_mapping.is_none());
 }
 
 #[test]

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- h266: complete PPS walk (§7.3.2.5) — `parse_pps` now retains every
+  syntax element of `pic_parameter_set_rbsp()` through
+  `rbsp_trailing_bits()` and `write_pps` / `write_pps_nal` are its
+  byte-exact inverses. New coverage: subpicture id mapping, the tile
+  grid (explicit columns/rows + §6.5.1 uniform-fill derivation), the
+  rectangular-slice layout (per-slice width/height presence
+  conditions driven by a replayed `SliceTopLeftTileIdx` walk,
+  tile-splitting via explicit CTU-row slice heights with the
+  `NumSlicesInTile` advance, raster and out-of-order
+  `pps_tile_idx_delta_val` walks), chroma tool offsets + CU chroma-QP
+  offset lists, deblocking control, the in-PH signalling flags and
+  verbatim `pps_extension_data` retention. Loop-driving counts are
+  bounded by the Table A.2 level-6.3 limits (`MaxTileCols ≤ 30`,
+  `MaxTilesPerAu ≤ 990`, `MaxSlicesPerAu ≤ 1000`).
 - h266: complete SPS walk (§7.3.2.4) — `parse_sps` now retains every
   syntax element of `seq_parameter_set_rbsp()` through
   `rbsp_trailing_bits()` and `write_sps` / `write_sps_nal` are its
@@ -27,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the VPS walk.
 
 ### Changed
+- h266: `VvcPps` is now the lossless full-walk representation —
+  presence flags gating unparsed blocks are replaced by `Option`
+  fields (`pps_conf_win_offsets`, `pps_scaling_win_offsets`,
+  `subpic_id_mapping`, `partition`, `chroma_tool_offsets`,
+  `deblocking`, `pps_pic_width_minus_wraparound_offset`), and
+  parsing no longer stops at `pps_subpic_id_mapping_present_flag`.
 - h266: `VvcSps` is now the lossless full-walk representation —
   presence flags that gated unparsed blocks
   (`sps_ptl_dpb_hrd_params_present_flag`,
