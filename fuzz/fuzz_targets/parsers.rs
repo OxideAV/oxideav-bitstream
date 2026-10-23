@@ -281,11 +281,11 @@ fn drive_h264_writer_roundtrips(data: &[u8]) {
         let re = h264::parse_pps(&rbsp).expect("written PPS re-parses");
         assert_eq!(re, pps);
     }
-    if let Ok(msgs) = h264::sei::parse_sei_rbsp(data) {
-        if let Ok(rbsp) = h264::sei::write_sei_rbsp(&msgs) {
-            let re = h264::sei::parse_sei_rbsp(&rbsp).expect("written SEI re-parses");
-            assert_eq!(re, msgs, "SEI framing fixed point");
-        }
+    if let Ok(msgs) = h264::sei::parse_sei_rbsp(data)
+        && let Ok(rbsp) = h264::sei::write_sei_rbsp(&msgs)
+    {
+        let re = h264::sei::parse_sei_rbsp(&rbsp).expect("written SEI re-parses");
+        assert_eq!(re, msgs, "SEI framing fixed point");
     }
 }
 
@@ -371,7 +371,10 @@ fn drive_hevc_typed_sei_roundtrips(data: &[u8]) {
                 let enc = hevc::sei::encode_sei_message(&decoded)
                     .expect("typed encoder accepts every decoded HEVC SEI");
                 let re = hevc::sei::decode_sei_message(&enc).expect("re-decodes");
-                assert_eq!(re, decoded, "HEVC typed SEI decode→encode→decode fixed point");
+                assert_eq!(
+                    re, decoded,
+                    "HEVC typed SEI decode→encode→decode fixed point"
+                );
             }
         }
     }
@@ -394,21 +397,21 @@ fn drive_hevc_typed_sei_roundtrips(data: &[u8]) {
         return;
     };
     for msg in &msgs {
-        if msg.payload_type == hevc::sei::SEI_TYPE_BUFFERING_PERIOD {
-            if let Ok(bp) = hevc::sei::decode_buffering_period(msg, &ctx) {
-                let enc = hevc::sei::encode_buffering_period(&bp, &ctx)
-                    .expect("BP encoder accepts every decoded buffering period");
-                let re = hevc::sei::decode_buffering_period(&enc, &ctx).expect("BP re-decodes");
-                assert_eq!(re, bp, "HEVC BP decode→encode→decode fixed point");
-            }
+        if msg.payload_type == hevc::sei::SEI_TYPE_BUFFERING_PERIOD
+            && let Ok(bp) = hevc::sei::decode_buffering_period(msg, &ctx)
+        {
+            let enc = hevc::sei::encode_buffering_period(&bp, &ctx)
+                .expect("BP encoder accepts every decoded buffering period");
+            let re = hevc::sei::decode_buffering_period(&enc, &ctx).expect("BP re-decodes");
+            assert_eq!(re, bp, "HEVC BP decode→encode→decode fixed point");
         }
-        if msg.payload_type == hevc::sei::SEI_TYPE_PIC_TIMING {
-            if let Ok(pt) = hevc::sei::decode_pic_timing(msg, &ctx) {
-                let enc = hevc::sei::encode_pic_timing(&pt, &ctx)
-                    .expect("PT encoder accepts every decoded pic timing");
-                let re = hevc::sei::decode_pic_timing(&enc, &ctx).expect("PT re-decodes");
-                assert_eq!(re, pt, "HEVC PT decode→encode→decode fixed point");
-            }
+        if msg.payload_type == hevc::sei::SEI_TYPE_PIC_TIMING
+            && let Ok(pt) = hevc::sei::decode_pic_timing(msg, &ctx)
+        {
+            let enc = hevc::sei::encode_pic_timing(&pt, &ctx)
+                .expect("PT encoder accepts every decoded pic timing");
+            let re = hevc::sei::decode_pic_timing(&enc, &ctx).expect("PT re-decodes");
+            assert_eq!(re, pt, "HEVC PT decode→encode→decode fixed point");
         }
     }
 }

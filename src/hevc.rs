@@ -26,8 +26,8 @@
 //! 7.4.3.2 (SPS semantics), 7.4.8 (ST-RPS derivation), Annex E
 //! (VUI/HRD), 9.2 (Exp-Golomb).
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 pub mod sei;
 
@@ -3068,7 +3068,7 @@ mod tests {
         w.write_bits(0, 4); // sps_video_parameter_set_id
         w.write_bits(0, 3); // sps_max_sub_layers_minus1
         w.write_bit(1); // sps_temporal_id_nesting_flag
-                        // profile_tier_level(1, 0): 2+1+5+32+4+32+11+1 = 88 bits + 8 level
+        // profile_tier_level(1, 0): 2+1+5+32+4+32+11+1 = 88 bits + 8 level
         w.write_bits(0, 2); // general_profile_space
         w.write_bit(0); // general_tier_flag
         w.write_bits(1, 5); // general_profile_idc = 1 (Main)
@@ -3122,14 +3122,14 @@ mod tests {
         // Two short-term RPS: set 0 explicit (2 negative), set 1
         // predicted from set 0 with deltaRps = -1.
         w.write_ue(2).unwrap(); // num_short_term_ref_pic_sets
-                                // set 0 (no inter flag for idx 0):
+        // set 0 (no inter flag for idx 0):
         w.write_ue(2).unwrap(); // num_negative_pics
         w.write_ue(0).unwrap(); // num_positive_pics
         w.write_ue(0).unwrap(); // delta_poc_s0_minus1[0] → DeltaPocS0 = -1
         w.write_bit(1); // used_by_curr_pic_s0_flag[0]
         w.write_ue(0).unwrap(); // delta_poc_s0_minus1[1] → DeltaPocS0 = -2
         w.write_bit(1); // used_by_curr_pic_s0_flag[1]
-                        // set 1 (predicted):
+        // set 1 (predicted):
         w.write_bit(1); // inter_ref_pic_set_prediction_flag
         w.write_bit(1); // delta_rps_sign = 1
         w.write_ue(0).unwrap(); // abs_delta_rps_minus1 → deltaRps = -1
@@ -3167,7 +3167,7 @@ mod tests {
         w.write_bits(30000, 32); // vui_time_scale
         w.write_bit(0); // vui_poc_proportional_to_timing_flag
         w.write_bit(1); // vui_hrd_parameters_present_flag
-                        // hrd_parameters(1, 0):
+        // hrd_parameters(1, 0):
         w.write_bit(1); // nal_hrd_parameters_present_flag
         w.write_bit(0); // vcl_hrd_parameters_present_flag
         w.write_bit(0); // sub_pic_hrd_params_present_flag
@@ -3176,12 +3176,12 @@ mod tests {
         w.write_bits(23, 5); // initial_cpb_removal_delay_length_minus1
         w.write_bits(15, 5); // au_cpb_removal_delay_length_minus1
         w.write_bits(5, 5); // dpb_output_delay_length_minus1
-                            // sub-layer 0:
+        // sub-layer 0:
         w.write_bit(0); // fixed_pic_rate_general_flag
         w.write_bit(0); // fixed_pic_rate_within_cvs_flag
         w.write_bit(0); // low_delay_hrd_flag
         w.write_ue(0).unwrap(); // cpb_cnt_minus1
-                                // sub_layer_hrd_parameters (1 entry, no sub-pic):
+        // sub_layer_hrd_parameters (1 entry, no sub-pic):
         w.write_ue(1999).unwrap(); // bit_rate_value_minus1
         w.write_ue(2999).unwrap(); // cpb_size_value_minus1
         w.write_bit(1); // cbr_flag
@@ -3280,8 +3280,8 @@ mod tests {
         write_sps_prefix(&mut w);
         w.write_bit(1); // scaling_list_enabled_flag
         w.write_bit(1); // sps_scaling_list_data_present_flag
-                        // scaling_list_data(): sizeId 0, matrixId 0 explicit ramp;
-                        // every other list predicted with delta 0 (default matrix).
+        // scaling_list_data(): sizeId 0, matrixId 0 explicit ramp;
+        // every other list predicted with delta 0 (default matrix).
         for size_id in 0..4usize {
             let step = if size_id == 3 { 3 } else { 1 };
             let mut m = 0usize;
@@ -3359,7 +3359,7 @@ mod tests {
         w.write_bits(0, 3); // vps_max_sub_layers_minus1
         w.write_bit(1); // vps_temporal_id_nesting_flag
         w.write_bits(0xFFFF, 16); // vps_reserved_0xffff_16bits
-                                  // profile_tier_level(1, 0):
+        // profile_tier_level(1, 0):
         w.write_bits(0, 2);
         w.write_bit(0);
         w.write_bits(1, 5);
@@ -3381,7 +3381,7 @@ mod tests {
         w.write_ue(0).unwrap(); // vps_max_latency_increase_plus1
         w.write_bits(1, 6); // vps_max_layer_id = 1
         w.write_ue(1).unwrap(); // vps_num_layer_sets_minus1 = 1
-                                // layer_id_included_flag[1][0..=1]:
+        // layer_id_included_flag[1][0..=1]:
         w.write_bit(1);
         w.write_bit(1);
         w.write_bit(1); // vps_timing_info_present_flag
@@ -3390,7 +3390,7 @@ mod tests {
         w.write_bit(1); // vps_poc_proportional_to_timing_flag
         w.write_ue(0).unwrap(); // vps_num_ticks_poc_diff_one_minus1
         w.write_ue(2).unwrap(); // vps_num_hrd_parameters = 2
-                                // entry 0 (cprms inferred 1):
+        // entry 0 (cprms inferred 1):
         w.write_ue(0).unwrap(); // hrd_layer_set_idx[0]
         w.write_bit(1); // nal_hrd_parameters_present_flag
         w.write_bit(0); // vcl_hrd_parameters_present_flag
@@ -3400,7 +3400,7 @@ mod tests {
         w.write_bits(23, 5); // initial_cpb_removal_delay_length_minus1
         w.write_bits(15, 5); // au_cpb_removal_delay_length_minus1
         w.write_bits(5, 5); // dpb_output_delay_length_minus1
-                            // sub-layer 0:
+        // sub-layer 0:
         w.write_bit(0); // fixed_pic_rate_general_flag
         w.write_bit(0); // fixed_pic_rate_within_cvs_flag
         w.write_bit(0); // low_delay_hrd_flag
@@ -3408,10 +3408,10 @@ mod tests {
         w.write_ue(99).unwrap(); // bit_rate_value_minus1
         w.write_ue(199).unwrap(); // cpb_size_value_minus1
         w.write_bit(0); // cbr_flag
-                        // entry 1 with cprms_present_flag = 0 (inherits common info):
+        // entry 1 with cprms_present_flag = 0 (inherits common info):
         w.write_ue(1).unwrap(); // hrd_layer_set_idx[1]
         w.write_bit(0); // cprms_present_flag[1] = 0
-                        // sub-layer 0 (common info inherited from entry 0):
+        // sub-layer 0 (common info inherited from entry 0):
         w.write_bit(0);
         w.write_bit(0);
         w.write_bit(0);
@@ -3620,7 +3620,7 @@ mod tests {
         w.write_bit(0); // 3d
         w.write_bit(0); // scc
         w.write_bits(0, 4); // pps_extension_4bits
-                            // pps_range_extension():
+        // pps_range_extension():
         w.write_ue(2).unwrap(); // log2_max_transform_skip_block_size_minus2
         w.write_bit(1); // cross_component_prediction_enabled_flag
         w.write_bit(1); // chroma_qp_offset_list_enabled_flag
@@ -3735,7 +3735,7 @@ mod tests {
         w.write_bits(0, 4); // sps_video_parameter_set_id
         w.write_bits(2, 3); // sps_max_sub_layers_minus1 = 2
         w.write_bit(1); // sps_temporal_id_nesting_flag
-                        // profile_tier_level(1, 2):
+        // profile_tier_level(1, 2):
         w.write_bits(0, 2); // general_profile_space
         w.write_bit(0); // general_tier_flag
         w.write_bits(1, 5); // general_profile_idc
@@ -3745,12 +3745,12 @@ mod tests {
         w.write_bits(0, 11); // reserved bottom
         w.write_bit(1); // inbld/reserved (retained verbatim)
         w.write_bits(93, 8); // general_level_idc
-                             // sub-layer presence flags [i][profile, level]:
+        // sub-layer presence flags [i][profile, level]:
         w.write_bit(1); // sub_layer_profile_present_flag[0]
         w.write_bit(1); // sub_layer_level_present_flag[0]
         w.write_bit(0); // sub_layer_profile_present_flag[1]
         w.write_bit(1); // sub_layer_level_present_flag[1]
-                        // reserved_zero_2bits — 2 * (8 - 2) = 12 bits:
+        // reserved_zero_2bits — 2 * (8 - 2) = 12 bits:
         w.write_bits(0, 12);
         // sub-layer 0 profile:
         w.write_bits(0, 2);

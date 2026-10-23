@@ -1,8 +1,8 @@
 //! VP8 keyframe parser end-to-end test against an reference-encoder-produced
 //! 320×240 single-frame IVF fixture.
 
-use oxideav_bitstream::ivf::{parse_all, parse_header, IVF_FOURCC_VP80};
-use oxideav_bitstream::vp8::{parse_frame_header, parse_keyframe, VP8_KEYFRAME_START_CODE};
+use oxideav_bitstream::ivf::{IVF_FOURCC_VP80, parse_all, parse_header};
+use oxideav_bitstream::vp8::{VP8_KEYFRAME_START_CODE, parse_frame_header, parse_keyframe};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/vp8_320x240_1frame.ivf");
 

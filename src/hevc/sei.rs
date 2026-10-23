@@ -25,10 +25,10 @@
 //! of the access unit) and suffix (type 40, after). Both carry the
 //! same `sei_rbsp()`; [`parse_sei_nal`] accepts either.
 
-use super::{ebsp_to_rbsp, nal_header, HevcHrdParameters};
+use super::{HevcHrdParameters, ebsp_to_rbsp, nal_header};
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 /// 7.4.2.2 — PREFIX_SEI_NUT.
 pub const NAL_TYPE_PREFIX_SEI: u8 = 39;
@@ -1256,14 +1256,16 @@ mod tests {
             sub_layer_id: 3,
             frame_field_info_present_flag: false,
         };
-        assert!(decode_buffering_period(
-            &SeiMessage {
-                payload_type: SEI_TYPE_BUFFERING_PERIOD,
-                payload: vec![0x80],
-            },
-            &ctx_bad
-        )
-        .is_err());
+        assert!(
+            decode_buffering_period(
+                &SeiMessage {
+                    payload_type: SEI_TYPE_BUFFERING_PERIOD,
+                    payload: vec![0x80],
+                },
+                &ctx_bad
+            )
+            .is_err()
+        );
     }
 
     #[test]

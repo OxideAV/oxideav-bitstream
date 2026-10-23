@@ -19,9 +19,9 @@
 //! framing layer never rejects an unknown type (§D.2.1 requires
 //! decoders to skip unrecognised SEI payloads).
 
-use super::{nal_header, H264Sps};
-use crate::bit_reader::BitReader;
+use super::{H264Sps, nal_header};
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 /// H.264 NAL unit type 6 — SEI (§7.4.1 Table 7-1).
 pub const NAL_TYPE_SEI: u8 = 6;
@@ -394,10 +394,10 @@ fn decode_pic_timing(payload: &[u8], sps: &H264Sps) -> Result<SeiPicTiming, Bits
                     }
                 }
             }
-            if let Some(hrd) = hrd {
-                if hrd.time_offset_length > 0 {
-                    ts.time_offset = Some(r.i(hrd.time_offset_length as u32)?);
-                }
+            if let Some(hrd) = hrd
+                && hrd.time_offset_length > 0
+            {
+                ts.time_offset = Some(r.i(hrd.time_offset_length as u32)?);
             }
             pt.clock_timestamps.push(ts);
         }

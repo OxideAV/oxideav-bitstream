@@ -26,14 +26,14 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_bitstream::av1::{
-    parse_obu_stream, read_leb128, read_obu, write_leb128, write_obu, ObuHeader, LEB128_MAX,
-    OBU_SPATIAL_ID_MAX, OBU_TEMPORAL_ID_MAX, OBU_TYPE_MAX,
+    LEB128_MAX, OBU_SPATIAL_ID_MAX, OBU_TEMPORAL_ID_MAX, OBU_TYPE_MAX, ObuHeader, parse_obu_stream,
+    read_leb128, read_obu, write_leb128, write_obu,
 };
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::ivf::{
-    parse_all, parse_frame, parse_header, write_all, write_frame, write_header, IvfHeader,
-    IVF_FRAME_HEADER_LEN, IVF_HEADER_LEN,
+    IVF_FRAME_HEADER_LEN, IVF_HEADER_LEN, IvfHeader, parse_all, parse_frame, parse_header,
+    write_all, write_frame, write_header,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -186,7 +186,7 @@ fn roundtrip_fields(data: &[u8]) {
     // Each field needs 5 bytes: 4 for a u32 value LE + 1 for the width.
     let mut w = BitWriter::new();
     let mut fields: Vec<(u32, u32)> = Vec::new();
-    for chunk in data.chunks_exact(5) {
+    for chunk in data.as_chunks::<5>().0.iter() {
         let value = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         // Width 1..=32 (avoid 0 so there is always a bit to compare).
         let width = (chunk[4] % 32) as u32 + 1;
@@ -284,14 +284,8 @@ fn obu_writer_roundtrip(data: &[u8]) {
 /// exact inverse pair. The writer is the only surface here so we also
 /// confirm it never panics on rejection paths.
 fn leb128_writer_roundtrip(data: &[u8]) {
-    let mut emitted = 0;
-    for chunk in data.chunks_exact(8) {
-        if emitted >= 256 {
-            break;
-        }
-        let raw = u64::from_le_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-        ]);
+    for chunk in data.as_chunks::<8>().0.iter().take(256) {
+        let raw = u64::from_le_bytes(*chunk);
         // Half the time, take the raw value (which may exceed LEB128_MAX
         // and must be rejected with a clean error). Half the time, mask
         // into the legal envelope and assert a successful round-trip.
@@ -317,7 +311,6 @@ fn leb128_writer_roundtrip(data: &[u8]) {
                 }
             }
         }
-        emitted += 1;
     }
 }
 
@@ -401,8 +394,8 @@ fn ivf_writer_roundtrip(data: &[u8]) {
         // (parse_all on the joined output will check the rest).
         assert_eq!(fend, incremental.len());
         let _ = IVF_FRAME_HEADER_LEN; // touch the constant so an
-                                      // unused-import lint never lands
-                                      // on the helper.
+        // unused-import lint never lands
+        // on the helper.
     }
     assert_eq!(
         incremental, buf,
@@ -418,7 +411,7 @@ fn ivf_writer_roundtrip(data: &[u8]) {
 fn ns_writer_roundtrip(data: &[u8]) {
     let mut w = BitWriter::new();
     let mut fields: Vec<(u32, u32)> = Vec::new();
-    for chunk in data.chunks_exact(3) {
+    for chunk in data.as_chunks::<3>().0.iter() {
         if fields.len() >= 256 {
             break;
         }
@@ -450,7 +443,7 @@ fn ns_writer_roundtrip(data: &[u8]) {
 fn su_writer_roundtrip(data: &[u8]) {
     let mut w = BitWriter::new();
     let mut fields: Vec<(i32, u32)> = Vec::new();
-    for chunk in data.chunks_exact(5) {
+    for chunk in data.as_chunks::<5>().0.iter() {
         if fields.len() >= 256 {
             break;
         }
@@ -490,7 +483,7 @@ fn su_writer_roundtrip(data: &[u8]) {
 fn uvlc_le_writer_roundtrip(data: &[u8]) {
     let mut w = BitWriter::new();
     let mut fields: Vec<(u32, u64, u32)> = Vec::new();
-    for chunk in data.chunks_exact(5) {
+    for chunk in data.as_chunks::<5>().0.iter() {
         if fields.len() >= 256 {
             break;
         }

@@ -27,8 +27,8 @@
 //! (frame header), 5.9.5 (uncompressed header for key frame),
 //! 4.10 (leb128).
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 // ─────────────────────────── OBU types ───────────────────────────────────────
 

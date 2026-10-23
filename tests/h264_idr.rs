@@ -2,8 +2,8 @@
 //! 320×240 single-frame fixtures.
 
 use oxideav_bitstream::h264::{
-    parse_idr_only, parse_pps_nal, parse_slice_header_minimal, parse_sps_nal, split_annex_b,
-    NAL_TYPE_IDR, NAL_TYPE_PPS, NAL_TYPE_SPS,
+    NAL_TYPE_IDR, NAL_TYPE_PPS, NAL_TYPE_SPS, parse_idr_only, parse_pps_nal,
+    parse_slice_header_minimal, parse_sps_nal, split_annex_b,
 };
 
 const BASELINE: &[u8] = include_bytes!("fixtures/h264_baseline_320x240_1frame.h264");
@@ -125,7 +125,7 @@ fn parse_sps_pps_individually_via_split() {
 #[test]
 fn sei_nal_parses_on_both_fixtures() {
     use oxideav_bitstream::h264::sei::{
-        decode_sei_message, parse_sei_nal, H264Sei, NAL_TYPE_SEI, SEI_TYPE_USER_DATA_UNREGISTERED,
+        H264Sei, NAL_TYPE_SEI, SEI_TYPE_USER_DATA_UNREGISTERED, decode_sei_message, parse_sei_nal,
     };
     for (name, stream) in [("baseline", BASELINE), ("high", HIGH)] {
         let sei_nal = find_nal_of_type(stream, NAL_TYPE_SEI)

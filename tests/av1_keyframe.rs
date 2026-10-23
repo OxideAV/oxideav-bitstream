@@ -1,7 +1,7 @@
 //! AV1 minimal keyframe parser end-to-end test against an
 //! reference-encoder-produced 320×240 single-keyframe OBU fixture.
 
-use oxideav_bitstream::av1::{parse_obu_stream, FRAME_TYPE_KEY};
+use oxideav_bitstream::av1::{FRAME_TYPE_KEY, parse_obu_stream};
 
 const AV1: &[u8] = include_bytes!("fixtures/av1_320x240_1frame.obu");
 
@@ -39,7 +39,7 @@ fn av1_parses_keyframe_obu_stream() {
 #[test]
 fn av1_sequence_header_writer_is_byte_exact_on_fixture() {
     use oxideav_bitstream::av1::{
-        parse_sequence_header, read_obu, write_sequence_header, OBU_SEQUENCE_HEADER,
+        OBU_SEQUENCE_HEADER, parse_sequence_header, read_obu, write_sequence_header,
     };
     // Walk the fixture's OBUs to the sequence header and prove the
     // writer reproduces its payload byte-exactly.

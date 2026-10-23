@@ -34,8 +34,8 @@
 //! (quantization_params), 6.2.6 (segmentation_params), 6.2.7
 //! (tile_info).
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 const KEY_FRAME: u8 = 0;
 const VP9_SYNC_CODE: u32 = 0x49_8342;
@@ -185,21 +185,13 @@ fn read_loop_filter_params(r: &mut BitReader<'_>, h: &mut Vp9UncompressedHeader)
 fn read_signed_6bit(r: &mut BitReader<'_>) -> i32 {
     let value = r.u(6) as i32;
     let sign = r.u(1);
-    if sign == 1 {
-        -value
-    } else {
-        value
-    }
+    if sign == 1 { -value } else { value }
 }
 
 fn read_signed_4bit(r: &mut BitReader<'_>) -> i32 {
     let value = r.u(4) as i32;
     let sign = r.u(1);
-    if sign == 1 {
-        -value
-    } else {
-        value
-    }
+    if sign == 1 { -value } else { value }
 }
 
 fn read_delta_q(r: &mut BitReader<'_>) -> i32 {
@@ -249,11 +241,7 @@ fn read_segmentation_params(r: &mut BitReader<'_>, h: &mut Vp9UncompressedHeader
                         let raw = r.u(bits) as i32;
                         let val = if signed {
                             let sign = r.u(1);
-                            if sign != 0 {
-                                -raw
-                            } else {
-                                raw
-                            }
+                            if sign != 0 { -raw } else { raw }
                         } else {
                             raw
                         };
@@ -298,11 +286,7 @@ fn read_tile_info(r: &mut BitReader<'_>, h: &mut Vp9UncompressedHeader) {
     let log2_rows = r.u(1);
     h.log2_tile_rows = if log2_rows != 0 {
         let r2 = r.u(1);
-        if r2 != 0 {
-            2
-        } else {
-            1
-        }
+        if r2 != 0 { 2 } else { 1 }
     } else {
         0
     };

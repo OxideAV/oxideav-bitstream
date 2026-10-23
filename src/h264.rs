@@ -26,8 +26,8 @@
 //! (slice header), 7.3.2.1.1.1 (frame cropping), 7.4.5 (slice header
 //! semantics), 9.1 (Exp-Golomb).
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 pub mod sei;
 
@@ -868,11 +868,7 @@ fn parse_pps_inner(rbsp: &[u8], sps: Option<&H264Sps>) -> Result<H264Pps, Bitstr
             // §7.3.2.2: 6 + ( ( chroma_format_idc != 3 ) ? 2 : 6 ) *
             // transform_8x8_mode_flag lists.
             let extra = if pps.transform_8x8_mode_flag {
-                if sps.chroma_format_idc != 3 {
-                    2
-                } else {
-                    6
-                }
+                if sps.chroma_format_idc != 3 { 2 } else { 6 }
             } else {
                 0
             };
@@ -1647,7 +1643,7 @@ mod tests {
         let mut w = crate::bit_writer::BitWriter::new();
         baseline_sps_body_to_vui_flag(&mut w);
         w.write_bit(1); // vui_parameters_present_flag
-                        // vui_parameters() — §E.1.1
+        // vui_parameters() — §E.1.1
         w.write_bit(1); // aspect_ratio_info_present_flag
         w.write_bits(255, 8); // aspect_ratio_idc = Extended_SAR
         w.write_bits(4, 16); // sar_width
@@ -1669,7 +1665,7 @@ mod tests {
         w.write_bits(60000, 32); // time_scale
         w.write_bit(1); // fixed_frame_rate_flag
         w.write_bit(1); // nal_hrd_parameters_present_flag
-                        // hrd_parameters() — §E.1.2, cpb_cnt_minus1 = 1 → 2 entries
+        // hrd_parameters() — §E.1.2, cpb_cnt_minus1 = 1 → 2 entries
         w.write_ue(1).unwrap(); // cpb_cnt_minus1
         w.write_bits(2, 4); // bit_rate_scale
         w.write_bits(3, 4); // cpb_size_scale
@@ -1841,7 +1837,7 @@ mod tests {
                 w.write_bit(1);
                 w.write_se(2).unwrap(); // j=0: nextScale=10
                 w.write_se(-10).unwrap(); // j=1: nextScale=0 → freeze at 10
-                                          // no more delta_scale coded for j=2..15
+            // no more delta_scale coded for j=2..15
             } else {
                 w.write_bit(0);
             }

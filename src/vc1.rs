@@ -43,8 +43,8 @@
 //! - `0x1E`: user data, entry-point level
 //! - `0x1F`: end-of-sequence
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 // ─────────────────────────── BDU type bytes ─────────────────────────────────
 

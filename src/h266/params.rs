@@ -28,9 +28,9 @@
 //! §7.4.3.4 (SPS subpicture block), §6.5.1 (CTB scanning derivations),
 //! Table A.2 (`MaxSlicesPerAu` ≤ 1000), §A.4.2 (`MaxDpbSize` ≤ 16).
 
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 /// `Ceil(Log2(x))` for `x >= 1`; 0 for `x <= 1`. Bit width of the
 /// SPS/PPS `u(v)` fields whose range is `0..x-1`.

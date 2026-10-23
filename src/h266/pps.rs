@@ -25,10 +25,10 @@
 //! §6.5.1 (CTB raster / tile scanning derivations, eqs. (14)–(22)),
 //! Table A.2 (tier/level limits).
 
-use super::{ebsp_to_rbsp, parse_nal_header, NAL_TYPE_PPS};
+use super::{NAL_TYPE_PPS, ebsp_to_rbsp, parse_nal_header};
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 /// Table A.2 level-6.3 limit: `MaxTileCols ≤ 30`.
 pub const PPS_MAX_TILE_COLS: u64 = 30;
@@ -336,7 +336,9 @@ fn num_slices_in_tile(
         remaining -= h;
     }
     let uniform = *exp_heights_minus1.last().unwrap() as u64 + 1;
-    Ok(exp_heights_minus1.len() as u64 + remaining / uniform + u64::from(remaining % uniform > 0))
+    Ok(exp_heights_minus1.len() as u64
+        + remaining / uniform
+        + u64::from(!remaining.is_multiple_of(uniform)))
 }
 
 /// Shared parse/write walk state for the rectangular-slice loop.
@@ -359,7 +361,8 @@ impl SliceLoopCtx {
     /// The §7.3.2.5 presence condition for
     /// `pps_slice_height_in_tiles_minus1[i]`.
     fn height_coded(&self, tile_idx: u64) -> bool {
-        tile_idx / self.cols != self.rows - 1 && (self.delta_present || tile_idx % self.cols == 0)
+        tile_idx / self.cols != self.rows - 1
+            && (self.delta_present || tile_idx.is_multiple_of(self.cols))
     }
 
     /// The §7.3.2.5 condition for the `pps_num_exp_slices_in_tile[i]`
@@ -372,7 +375,7 @@ impl SliceLoopCtx {
     /// advance for the next slice.
     fn default_advance(&self, tile_idx: u64, w_m1: u32, h_m1: u32) -> u64 {
         let mut t = tile_idx + w_m1 as u64 + 1;
-        if t % self.cols == 0 {
+        if t.is_multiple_of(self.cols) {
             t += h_m1 as u64 * self.cols;
         }
         t

@@ -23,18 +23,18 @@
 //! syntax, Table A.2 (`MaxSlicesPerAu`), §A.4.2 (`MaxDpbSize`).
 
 use super::params::{
+    VvcDpbParameters, VvcGeneralTimingHrd, VvcOlsTimingHrd, VvcRefPicListStruct, VvcRplsContext,
     ceil_log2_u64, parse_dpb_parameters, parse_general_timing_hrd, parse_ols_timing_hrd,
     parse_ref_pic_list_struct, write_dpb_parameters, write_general_timing_hrd,
-    write_ols_timing_hrd, write_ref_pic_list_struct, VvcDpbParameters, VvcGeneralTimingHrd,
-    VvcOlsTimingHrd, VvcRefPicListStruct, VvcRplsContext,
+    write_ols_timing_hrd, write_ref_pic_list_struct,
 };
 use super::{
-    ebsp_to_rbsp, parse_nal_header, parse_profile_tier_level, write_profile_tier_level,
-    VvcProfileTierLevel, NAL_TYPE_SPS,
+    NAL_TYPE_SPS, VvcProfileTierLevel, ebsp_to_rbsp, parse_nal_header, parse_profile_tier_level,
+    write_profile_tier_level,
 };
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 /// Spec upper bound on `sps_log2_max_pic_order_cnt_lsb_minus4`
 /// (§7.4.3.4): `MaxPicOrderCntLsb` is bounded by 2^16, hence
@@ -166,7 +166,7 @@ fn parse_subpic_info(
                 // fully inferred from entry 0 (§7.4.3.4).
                 let w0 = entries[0].sps_subpic_width_minus1 as u64 + 1;
                 let h0 = entries[0].sps_subpic_height_minus1 as u64 + 1;
-                if tmp_width_val % w0 != 0 || tmp_height_val % h0 != 0 {
+                if !tmp_width_val.is_multiple_of(w0) || !tmp_height_val.is_multiple_of(h0) {
                     return Err(BitstreamError::invalid(
                         "sps_subpic_same_size_flag = 1 requires the subpicture grid to tile the \
                          picture exactly (7.4.3.4)",

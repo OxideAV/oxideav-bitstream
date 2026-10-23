@@ -3,9 +3,9 @@
 //! oxideav-vdpau's Round 4 tests.
 
 use oxideav_bitstream::mpeg2::{
-    find_first_slice, find_start_codes, parse_picture_coding_extension, parse_picture_header,
-    parse_sequence_extension, parse_sequence_header, EXTENSION_ID_PICTURE_CODING,
-    EXTENSION_ID_SEQUENCE, START_CODE_EXTENSION, START_CODE_PICTURE, START_CODE_SEQUENCE_HEADER,
+    EXTENSION_ID_PICTURE_CODING, EXTENSION_ID_SEQUENCE, START_CODE_EXTENSION, START_CODE_PICTURE,
+    START_CODE_SEQUENCE_HEADER, find_first_slice, find_start_codes, parse_picture_coding_extension,
+    parse_picture_header, parse_sequence_extension, parse_sequence_header,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/mpeg2_main_320x240_1frame.m2v");

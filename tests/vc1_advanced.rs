@@ -5,9 +5,8 @@
 //! upstream sample covers the seq+entry+first frame).
 
 use oxideav_bitstream::vc1::{
-    parse_entry_point_header, parse_first_picture, parse_picture_header,
-    parse_sequence_header_advanced, split_bdus, BDU_ENTRY_POINT, BDU_FRAME, BDU_SEQUENCE_HEADER,
-    PROFILE_ADVANCED,
+    BDU_ENTRY_POINT, BDU_FRAME, BDU_SEQUENCE_HEADER, PROFILE_ADVANCED, parse_entry_point_header,
+    parse_first_picture, parse_picture_header, parse_sequence_header_advanced, split_bdus,
 };
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/vc1_advanced_1920x1080_1frame.vc1");

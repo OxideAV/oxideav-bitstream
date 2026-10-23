@@ -18,17 +18,17 @@
 //! level), §7.3.4 (DPB), §7.3.5 (timing + HRD).
 
 use super::params::{
-    parse_dpb_parameters, parse_general_timing_hrd, parse_ols_timing_hrd, write_dpb_parameters,
-    write_general_timing_hrd, write_ols_timing_hrd, VvcDpbParameters, VvcGeneralTimingHrd,
-    VvcOlsTimingHrd,
+    VvcDpbParameters, VvcGeneralTimingHrd, VvcOlsTimingHrd, parse_dpb_parameters,
+    parse_general_timing_hrd, parse_ols_timing_hrd, write_dpb_parameters, write_general_timing_hrd,
+    write_ols_timing_hrd,
 };
 use super::{
-    ebsp_to_rbsp, parse_nal_header, parse_profile_tier_level, write_profile_tier_level,
-    VvcProfileTierLevel, NAL_TYPE_VPS,
+    NAL_TYPE_VPS, VvcProfileTierLevel, ebsp_to_rbsp, parse_nal_header, parse_profile_tier_level,
+    write_profile_tier_level,
 };
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 // ─────────────────────────── Sub-structures ─────────────────────────────────
 
@@ -332,12 +332,12 @@ pub fn parse_vps(nal_body: &[u8]) -> Result<VvcVps, BitstreamError> {
             vps_independent_layer_flag: 1,
             ..Default::default()
         };
-        if let Some(prev) = v.layers.last() {
-            if l.vps_layer_id <= prev.vps_layer_id {
-                return Err(BitstreamError::invalid(
-                    "vps_layer_id values must be strictly increasing (7.4.3.3)",
-                ));
-            }
+        if let Some(prev) = v.layers.last()
+            && l.vps_layer_id <= prev.vps_layer_id
+        {
+            return Err(BitstreamError::invalid(
+                "vps_layer_id values must be strictly increasing (7.4.3.3)",
+            ));
         }
         if i > 0 && v.vps_all_independent_layers_flag == 0 {
             l.vps_independent_layer_flag = r.u(1) as u8;

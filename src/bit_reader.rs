@@ -48,7 +48,7 @@ impl<'a> BitReader<'a> {
 
     /// True if the reader is currently byte-aligned.
     pub fn byte_aligned(&self) -> bool {
-        self.bit_pos % 8 == 0
+        self.bit_pos.is_multiple_of(8)
     }
 
     /// Skip forward by `n` bits.

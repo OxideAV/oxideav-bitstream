@@ -2,7 +2,7 @@
 //! reference-encoder-produced 320×240 single-keyframe IVF fixture
 //! lifted from oxideav-vdpau's Round 4 tests.
 
-use oxideav_bitstream::ivf::{parse_all, IVF_FOURCC_VP90};
+use oxideav_bitstream::ivf::{IVF_FOURCC_VP90, parse_all};
 use oxideav_bitstream::vp9::parse_uncompressed_header;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/vp9_320x240_1frame.ivf");

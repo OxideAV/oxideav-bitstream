@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- edition 2024, MSRV 1.95.
+
 ### Added
 - h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
   syntax element of `video_parameter_set_rbsp()` including the

@@ -28,8 +28,8 @@
 //! 6.2.2.3 (sequence extension), 6.2.3 (picture header), 6.2.3.1
 //! (picture coding extension).
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 // ─────────────────────────── Start codes ────────────────────────────────────
 

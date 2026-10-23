@@ -23,10 +23,10 @@
 //! diagonal scan order), Table 5 (PREFIX_APS_NUT / SUFFIX_APS_NUT),
 //! Table 6 (`aps_params_type` codes).
 
-use super::{ebsp_to_rbsp, parse_nal_header, NAL_TYPE_PREFIX_APS, NAL_TYPE_SUFFIX_APS};
+use super::{NAL_TYPE_PREFIX_APS, NAL_TYPE_SUFFIX_APS, ebsp_to_rbsp, parse_nal_header};
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 // ─────────────────────────── Constants ───────────────────────────────────────
 
@@ -1034,7 +1034,7 @@ mod tests {
         w.write_bit(1); // alf_chroma_filter_signal_flag
         w.write_bit(1); // alf_cc_cb_filter_signal_flag
         w.write_bit(0); // alf_cc_cr_filter_signal_flag
-                        // luma:
+        // luma:
         w.write_bit(1); // alf_luma_clip_flag
         w.write_ue(1).unwrap(); // alf_luma_num_filters_signalled_minus1 = 1
         for filt_idx in 0..NUM_ALF_FILTERS {
@@ -1160,7 +1160,7 @@ mod tests {
                 2 => {
                     w.write_bit(0); // copy_mode
                     w.write_bit(0); // pred_mode → explicit from the flat-8 base
-                                    // (id == 2 codes no pred_id_delta)
+                    // (id == 2 codes no pred_id_delta)
                     for i in 0..16 {
                         w.write_se(if i == 0 { 5 } else { 1 }).unwrap();
                     }
@@ -1170,7 +1170,7 @@ mod tests {
                     w.write_bit(1); // pred_mode
                     w.write_ue(3).unwrap(); // pred_id_delta
                     w.write_se(-4).unwrap(); // dc_coef (id > 13)
-                                             // 64×64 id: bottom-right 4×4 quadrant skipped → 48 coded
+                    // 64×64 id: bottom-right 4×4 quadrant skipped → 48 coded
                     for i in 0..48 {
                         w.write_se(if i % 7 == 0 { 2 } else { 0 }).unwrap();
                     }

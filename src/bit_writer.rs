@@ -47,7 +47,7 @@ impl BitWriter {
 
     /// True if the next write would start on a byte boundary.
     pub fn byte_aligned(&self) -> bool {
-        self.bit_pos % 8 == 0
+        self.bit_pos.is_multiple_of(8)
     }
 
     /// Append a single bit (only bit 0 of `bit` is used).

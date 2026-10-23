@@ -19,32 +19,32 @@
 //!   returns a clean error rather than panicking.
 //! * `read_leb128` round-trips against a local LEB128 encoder.
 
+use oxideav_bitstream::BitstreamError;
 use oxideav_bitstream::av1::{
-    read_leb128, read_obu, write_leb128, write_obu, ObuHeader, LEB128_MAX, OBU_FRAME,
-    OBU_FRAME_HEADER, OBU_METADATA, OBU_PADDING, OBU_SEQUENCE_HEADER, OBU_SPATIAL_ID_MAX,
-    OBU_TEMPORAL_DELIMITER, OBU_TEMPORAL_ID_MAX, OBU_TILE_GROUP, OBU_TYPE_MAX,
+    LEB128_MAX, OBU_FRAME, OBU_FRAME_HEADER, OBU_METADATA, OBU_PADDING, OBU_SEQUENCE_HEADER,
+    OBU_SPATIAL_ID_MAX, OBU_TEMPORAL_DELIMITER, OBU_TEMPORAL_ID_MAX, OBU_TILE_GROUP, OBU_TYPE_MAX,
+    ObuHeader, read_leb128, read_obu, write_leb128, write_obu,
 };
 use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::bit_writer::BitWriter;
 use oxideav_bitstream::h264::{
-    parse_aud_nal as h264_parse_aud_nal, write_aud_nal as h264_write_aud_nal,
-    H264AccessUnitDelimiter, H264_PRIMARY_PIC_TYPE_MAX,
+    H264_PRIMARY_PIC_TYPE_MAX, H264AccessUnitDelimiter, parse_aud_nal as h264_parse_aud_nal,
+    write_aud_nal as h264_write_aud_nal,
 };
 use oxideav_bitstream::h266::{
-    parse_aud, parse_picture_header, parse_picture_header_with_sps, write_aud,
-    VvcAccessUnitDelimiter, VvcSps, AUD_PIC_TYPE_MAX, NAL_TYPE_PH, PH_PIC_PARAMETER_SET_ID_MAX,
-    SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
+    AUD_PIC_TYPE_MAX, NAL_TYPE_PH, PH_PIC_PARAMETER_SET_ID_MAX,
+    SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX, VvcAccessUnitDelimiter, VvcSps, parse_aud,
+    parse_picture_header, parse_picture_header_with_sps, write_aud,
 };
 use oxideav_bitstream::hevc::{
-    parse_aud_nal as hevc_parse_aud_nal, write_aud_nal as hevc_write_aud_nal,
-    HevcAccessUnitDelimiter, HEVC_PIC_TYPE_MAX,
+    HEVC_PIC_TYPE_MAX, HevcAccessUnitDelimiter, parse_aud_nal as hevc_parse_aud_nal,
+    write_aud_nal as hevc_write_aud_nal,
 };
 use oxideav_bitstream::ivf::{
-    parse_all, parse_frame, parse_header, write_all, write_frame, write_header, IvfHeader,
-    IVF_FOURCC_VP80, IVF_FOURCC_VP90, IVF_FRAME_HEADER_LEN, IVF_HEADER_LEN,
+    IVF_FOURCC_VP80, IVF_FOURCC_VP90, IVF_FRAME_HEADER_LEN, IVF_HEADER_LEN, IvfHeader, parse_all,
+    parse_frame, parse_header, write_all, write_frame, write_header,
 };
 use oxideav_bitstream::nal::{ebsp_to_rbsp, rbsp_to_ebsp};
-use oxideav_bitstream::BitstreamError;
 
 /// Deterministic 64-bit linear-congruential generator (Numerical
 /// Recipes constants). Clean-room: a textbook LCG, not copied IO code.
@@ -73,19 +73,11 @@ impl Lcg {
 
 /// Mask keeping the low `n` bits (`n` in `0..=32`).
 fn mask32(n: u32) -> u32 {
-    if n >= 32 {
-        u32::MAX
-    } else {
-        (1u32 << n) - 1
-    }
+    if n >= 32 { u32::MAX } else { (1u32 << n) - 1 }
 }
 
 fn mask64(n: u32) -> u64 {
-    if n >= 64 {
-        u64::MAX
-    } else {
-        (1u64 << n) - 1
-    }
+    if n >= 64 { u64::MAX } else { (1u64 << n) - 1 }
 }
 
 #[test]

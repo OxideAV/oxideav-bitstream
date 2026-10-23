@@ -2,9 +2,9 @@
 //! 320×240 single-frame fixture.
 
 use oxideav_bitstream::hevc::{
-    is_irap, parse_idr_only, parse_pps_nal, parse_sps_nal, parse_vps_nal, split_annex_b,
-    write_pps_nal, write_sps_nal, write_vps_nal, NAL_TYPE_IDR_N_LP, NAL_TYPE_IDR_W_RADL,
-    NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS,
+    NAL_TYPE_IDR_N_LP, NAL_TYPE_IDR_W_RADL, NAL_TYPE_PPS, NAL_TYPE_SPS, NAL_TYPE_VPS, is_irap,
+    parse_idr_only, parse_pps_nal, parse_sps_nal, parse_vps_nal, split_annex_b, write_pps_nal,
+    write_sps_nal, write_vps_nal,
 };
 
 const HEVC_MAIN: &[u8] = include_bytes!("fixtures/hevc_main_320x240_1frame.h265");

@@ -45,8 +45,8 @@
 //! - 7.3.3.1 — General profile, tier, and level syntax.
 //! - 7.3.3.2 — General constraints information syntax.
 
-use crate::bit_reader::BitReader;
 use crate::BitstreamError;
+use crate::bit_reader::BitReader;
 
 pub mod aps;
 pub mod sei;
@@ -734,8 +734,8 @@ pub fn write_dci_nal(dci: &VvcDci) -> Result<Vec<u8>, BitstreamError> {
 pub mod vps;
 
 pub use vps::{
-    parse_vps, write_vps, write_vps_nal, VvcVps, VvcVpsDpb, VvcVpsLayer, VvcVpsOlsDpb,
-    VvcVpsOlsHrd, VvcVpsPtl, VvcVpsTimingHrd,
+    VvcVps, VvcVpsDpb, VvcVpsLayer, VvcVpsOlsDpb, VvcVpsOlsHrd, VvcVpsPtl, VvcVpsTimingHrd,
+    parse_vps, write_vps, write_vps_nal,
 };
 
 // ──────────────────── SPS RBSP (7.3.2.4) — full walk ───────────────────────
@@ -744,16 +744,16 @@ pub mod params;
 pub mod sps;
 
 pub use params::{
-    parse_dpb_parameters, parse_general_timing_hrd, parse_ols_timing_hrd,
+    VVC_NUM_REF_ENTRIES_MAX, VvcCpbSchedule, VvcDpbEntry, VvcDpbParameters, VvcGeneralTimingHrd,
+    VvcOlsTimingHrd, VvcOlsTimingHrdSublayer, VvcRefPicListStruct, VvcRplsContext, VvcRplsEntry,
+    VvcSublayerHrd, parse_dpb_parameters, parse_general_timing_hrd, parse_ols_timing_hrd,
     parse_ref_pic_list_struct, write_dpb_parameters, write_general_timing_hrd,
-    write_ols_timing_hrd, write_ref_pic_list_struct, VvcCpbSchedule, VvcDpbEntry, VvcDpbParameters,
-    VvcGeneralTimingHrd, VvcOlsTimingHrd, VvcOlsTimingHrdSublayer, VvcRefPicListStruct,
-    VvcRplsContext, VvcRplsEntry, VvcSublayerHrd, VVC_NUM_REF_ENTRIES_MAX,
+    write_ols_timing_hrd, write_ref_pic_list_struct,
 };
 pub use sps::{
-    parse_sps, write_sps, write_sps_nal, VvcChromaQpTable, VvcLadf, VvcSps, VvcSpsRangeExtension,
-    VvcSpsTimingHrd, VvcSubpicEntry, VvcSubpicInfo, SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX,
-    SPS_NUM_SUBPICS_MINUS1_MAX,
+    SPS_LOG2_MAX_PIC_ORDER_CNT_LSB_MINUS4_MAX, SPS_NUM_SUBPICS_MINUS1_MAX, VvcChromaQpTable,
+    VvcLadf, VvcSps, VvcSpsRangeExtension, VvcSpsTimingHrd, VvcSubpicEntry, VvcSubpicInfo,
+    parse_sps, write_sps, write_sps_nal,
 };
 
 // ──────────────────── PPS RBSP (7.3.2.5) — full walk ───────────────────────
@@ -761,9 +761,9 @@ pub use sps::{
 pub mod pps;
 
 pub use pps::{
-    parse_pps, write_pps, write_pps_nal, VvcPps, VvcPpsChromaToolOffsets, VvcPpsDeblocking,
-    VvcPpsPartition, VvcPpsRectSlice, VvcPpsSubpicIdMapping, PPS_MAX_TILES_PER_AU,
-    PPS_MAX_TILE_COLS, PPS_NUM_SLICES_IN_PIC_MINUS1_MAX,
+    PPS_MAX_TILE_COLS, PPS_MAX_TILES_PER_AU, PPS_NUM_SLICES_IN_PIC_MINUS1_MAX, VvcPps,
+    VvcPpsChromaToolOffsets, VvcPpsDeblocking, VvcPpsPartition, VvcPpsRectSlice,
+    VvcPpsSubpicIdMapping, parse_pps, write_pps, write_pps_nal,
 };
 
 // ─────────────────────────── Picture header ──────────────────────────────────
@@ -1194,7 +1194,7 @@ mod tests {
         let mut w = crate::bit_writer::BitWriter::new();
         w.write_bits(0, 4); // dci_reserved_zero_4bits
         w.write_bits(1, 4); // dci_num_ptls_minus1 = 1
-                            // PTL 0 — profile_tier_level(1, 0):
+        // PTL 0 — profile_tier_level(1, 0):
         w.write_bits(1, 7); // general_profile_idc
         w.write_bit(0); // general_tier_flag
         w.write_bits(51, 8); // general_level_idc
@@ -1208,11 +1208,11 @@ mod tests {
         w.write_bit(1); // gci_reserved_bit[0]
         w.write_bit(0); // gci_reserved_bit[1]
         w.align_to_byte(); // gci_alignment_zero_bit
-                           // (max_sublayers_minus1 == 0: no sublayer flags)
+        // (max_sublayers_minus1 == 0: no sublayer flags)
         w.align_to_byte(); // ptl_reserved_zero_bit (no-op, already aligned)
         w.write_bits(1, 8); // ptl_num_sub_profiles = 1
         w.write_bits(0xDEAD_BEEF_u32, 32); // general_sub_profile_idc[0]
-                                           // PTL 1 — minimal:
+        // PTL 1 — minimal:
         w.write_bits(2, 7);
         w.write_bit(1);
         w.write_bits(83, 8);

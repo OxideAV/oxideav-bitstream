@@ -24,10 +24,10 @@
 //! dispatch table are surfaced raw as [`VvcSei::Unknown`] — §D.2.2
 //! requires decoders to skip unrecognised SEI payloads.
 
-use super::{ebsp_to_rbsp, parse_nal_header, NAL_TYPE_PREFIX_SEI, NAL_TYPE_SUFFIX_SEI};
+use super::{NAL_TYPE_PREFIX_SEI, NAL_TYPE_SUFFIX_SEI, ebsp_to_rbsp, parse_nal_header};
+use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 use crate::bit_writer::BitWriter;
-use crate::BitstreamError;
 
 /// §D.2.1 payloadType values for the in-H.266 families.
 pub const SEI_TYPE_BUFFERING_PERIOD: u32 = 0;
