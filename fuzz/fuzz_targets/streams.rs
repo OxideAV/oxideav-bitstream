@@ -15,7 +15,31 @@ use oxideav_bitstream::h264::stream::{H264Event, H264Parser};
 fuzz_target!(|data: &[u8]| {
     drive_h264(data);
     drive_hevc(data);
+    drive_vp9(data);
 });
+
+/// VP9: an IVF stream (or, failing that, the input as one chunk) of
+/// frames / superframes through the header state machine and the
+/// §8.6.1 / §8.8.1 derivations.
+fn drive_vp9(data: &[u8]) {
+    use oxideav_bitstream::vp9::frame::{Vp9State, split_superframe};
+    let chunks: Vec<&[u8]> = match oxideav_bitstream::ivf::parse_all(data) {
+        Ok((_, frames)) => frames.iter().map(|f| f.payload).collect(),
+        Err(_) => vec![data],
+    };
+    let mut st = Vp9State::new();
+    for chunk in chunks {
+        for frame in split_superframe(chunk) {
+            if let Ok(h) = st.decode_frame_header(frame) {
+                let _ = h.loop_filter_levels();
+                for seg in 0..8 {
+                    let _ = (h.dc_quant(0, seg), h.ac_quant(1, seg));
+                }
+                assert!(h.uncompressed_header_size <= frame.len());
+            }
+        }
+    }
+}
 
 fn drive_hevc(data: &[u8]) {
     use oxideav_bitstream::hevc::dpb::HevcDpb;

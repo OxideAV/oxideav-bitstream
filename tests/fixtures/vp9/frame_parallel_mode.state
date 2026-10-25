@@ -1,0 +1,12 @@
+FRAME	idx=0	show_existing_frame=0	profile=0	keyframe=1	show_frame=1	intraonly=0	error_resilient=1	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=0	parallel_mode=1	frame_ctx=0	refresh_mask=0xff	refidx0=0	refidx1=0	refidx2=0	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=0	filter_mode=0	lossless=0	yac_qi=33	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=3	compressed_hdr_size=38	uncompressed_hdr_size=18
+LOOPFILTER	idx=0	level=2	sharpness=0	lf_delta_enabled=1	lf_delta_updated=1	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=0	enabled=0
+FRAME	idx=1	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=1	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=0	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=140	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=3	compressed_hdr_size=3	uncompressed_hdr_size=13
+LOOPFILTER	idx=1	level=2	sharpness=0	lf_delta_enabled=1	lf_delta_updated=1	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=1	enabled=0
+FRAME	idx=2	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=1	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=0	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=140	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=3	compressed_hdr_size=3	uncompressed_hdr_size=13
+LOOPFILTER	idx=2	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=1	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=2	enabled=0
+FRAME	idx=3	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=1	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=0	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=140	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=1	compressed_hdr_size=3	uncompressed_hdr_size=13
+LOOPFILTER	idx=3	level=2	sharpness=0	lf_delta_enabled=1	lf_delta_updated=1	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=3	enabled=0

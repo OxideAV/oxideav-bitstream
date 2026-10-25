@@ -57,9 +57,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified against `trace_headers` on x265 open-GOP B-pyramid (CRA +
   RASL, WPP, two slices), weighted + scaling-list, Main 10, tiles,
   multi-slice and WPP streams, and POC against presentation order.
+- vp9: `vp9::frame` — the uncompressed header of every frame type
+  (key, inter with `frame_size_with_refs()`, intra-only incl. the
+  profile 0 colour inference, `show_existing_frame`) parsed against a
+  `Vp9State` that carries reference slot sizes / colour, loop filter
+  deltas and segmentation features across frames with the §7.2
+  `setup_past_independence()` resets; the header reports the values in
+  force. Adds the §8.6.1 `dc_q` / `ac_q` tables (8/10/12-bit, checked
+  against the spec text) with `get_qindex()` / `get_dc_quant()` /
+  `get_ac_quant()`, the §8.8.1 `LvlLookup` table and Annex B
+  `split_superframe`. Verified against `trace_headers` on 15 streams
+  (alt-ref pyramid, superframes, show_existing_frame, intra-only,
+  scaled references, resizing, segmentation features, lf deltas,
+  frame-parallel, 10-bit, 4:4:4, lossless) and the in-force state
+  against the decode traces staged in `docs/video/vp9/fixtures/`.
 - fuzz: new `streams` target drives elementary streams through the
   stateful front ends (H.264 parser + POC + DPB, HEVC parser + RPS +
-  lists); the `parsers` target also runs the complete H.264 slice
+  lists, VP9 superframes + header state); the `parsers` target also runs the complete H.264 slice
   header and HEVC slice segment header.
 - h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
   syntax element of `video_parameter_set_rbsp()` including the

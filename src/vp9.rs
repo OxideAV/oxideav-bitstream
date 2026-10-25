@@ -37,6 +37,9 @@
 use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 
+pub mod frame;
+mod tables;
+
 const KEY_FRAME: u8 = 0;
 const VP9_SYNC_CODE: u32 = 0x49_8342;
 

@@ -1,0 +1,54 @@
+FRAME	idx=0	show_existing_frame=0	profile=0	keyframe=1	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0xff	refidx0=0	refidx1=0	refidx2=0	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=0	filter_mode=0	lossless=0	yac_qi=4	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=72	uncompressed_hdr_size=18
+LOOPFILTER	idx=0	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=1	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=0	enabled=0
+FRAME	idx=1	show_existing_frame=0	profile=0	keyframe=0	show_frame=0	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=1	refresh_mask=0x04	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=6	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=55	uncompressed_hdr_size=10
+LOOPFILTER	idx=1	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=1	enabled=0
+FRAME	idx=2	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=15	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=1	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=2	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=2	enabled=0
+FRAME	idx=3	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=14	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=1	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=3	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=3	enabled=0
+FRAME	idx=4	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=14	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=10	uncompressed_hdr_size=10
+LOOPFILTER	idx=4	level=6	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=4	enabled=0
+FRAME	idx=5	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=0	lossless=0	yac_qi=14	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=18	uncompressed_hdr_size=10
+LOOPFILTER	idx=5	level=8	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=5	enabled=0
+FRAME	idx=6	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=13	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=17	uncompressed_hdr_size=10
+LOOPFILTER	idx=6	level=9	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=6	enabled=0
+FRAME	idx=7	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=13	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=7	level=9	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=7	enabled=0
+FRAME	idx=8	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x04	refidx0=0	refidx1=1	refidx2=2	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=12	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=1	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=8	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=8	enabled=0
+FRAME	idx=9	show_existing_frame=0	profile=0	keyframe=0	show_frame=0	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=1	refresh_mask=0x02	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=1	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=45	uncompressed_hdr_size=10
+LOOPFILTER	idx=9	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=9	enabled=0
+FRAME	idx=10	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=12	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=21	uncompressed_hdr_size=10
+LOOPFILTER	idx=10	level=6	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=10	enabled=0
+FRAME	idx=11	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=11	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=16	uncompressed_hdr_size=10
+LOOPFILTER	idx=11	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=11	enabled=0
+FRAME	idx=12	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=11	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=16	uncompressed_hdr_size=10
+LOOPFILTER	idx=12	level=1	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=12	enabled=0
+FRAME	idx=13	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=11	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=13	level=3	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=13	enabled=0
+FRAME	idx=14	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=12	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=16	uncompressed_hdr_size=10
+LOOPFILTER	idx=14	level=6	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=14	enabled=0
+FRAME	idx=15	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=4	lossless=0	yac_qi=12	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=15	level=3	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=15	enabled=0
+FRAME	idx=16	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x01	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=1	highprec_mvs=1	filter_mode=0	lossless=0	yac_qi=13	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=4	compressed_hdr_size=5	uncompressed_hdr_size=10
+LOOPFILTER	idx=16	level=1	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=16	enabled=0
+FRAME	idx=17	show_existing_frame=0	profile=0	keyframe=0	show_frame=1	intraonly=0	error_resilient=0	w=64	h=64	bpp=8	ss_h=1	ss_v=1	color_space=2	color_range=1	refresh_ctx=1	parallel_mode=1	frame_ctx=0	refresh_mask=0x02	refidx0=0	refidx1=2	refidx2=1	signbias0=0	signbias1=0	signbias2=0	highprec_mvs=1	filter_mode=1	lossless=0	yac_qi=13	ydc_qd=0	uvdc_qd=0	uvac_qd=0	tx_mode=1	compressed_hdr_size=3	uncompressed_hdr_size=10
+LOOPFILTER	idx=17	level=0	sharpness=0	lf_delta_enabled=1	lf_delta_updated=0	ref_delta=[1,0,-1,-1]	mode_delta=[0,0]
+SEGMENT	idx=17	enabled=0

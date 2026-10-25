@@ -307,6 +307,11 @@ pub fn parse_slice_segment_header(
             "slice headers with SCC / multilayer / 3D picture parameter sets",
         ));
     }
+    // §7.4.3.2.1: bit_depth_*_minus8 in 0..=8 (bounds the weighted
+    // prediction offset ranges below).
+    if sps.bit_depth_luma_minus8 > 8 || sps.bit_depth_chroma_minus8 > 8 {
+        return Err(BitstreamError::invalid("SPS bit depth above 16"));
+    }
     let escaped = &nal[2..];
     let rbsp = ebsp_to_rbsp(escaped);
     let mut r = BitReader::new(&rbsp);

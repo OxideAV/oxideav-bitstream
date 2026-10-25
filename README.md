@@ -58,7 +58,14 @@ H.266 (VVC), VP9, VP8, MPEG-2 and VC-1 have landed as additional
 modules; their scope is incremental — see each module's rustdoc for
 what's parsed today versus deferred. The VP9 module carries a
 keyframe uncompressed-header **writer** (byte-exact on the crate's
-IVF fixture) alongside the parser.
+IVF fixture) alongside the parser, and `vp9::frame` parses the
+uncompressed header of **every** frame type — key, inter
+(`frame_size_with_refs()` against the reference slot sizes),
+intra-only, `show_existing_frame` — through `Vp9State`, which reports
+the colour configuration, loop filter deltas and segmentation features
+in force and records what each frame leaves behind; it also provides
+the §8.6.1 `dc_q` / `ac_q` lookups with `get_qindex()`, the §8.8.1
+`LvlLookup` table and Annex B superframe splitting.
 
 ## Module layout
 
@@ -111,6 +118,8 @@ src/
 ├── vc1.rs           # VC-1 sequence + entry-point + picture header
 ├── vp8.rs           # VP8 keyframe header + IVF demuxer
 ├── vp9.rs           # VP9 uncompressed header — parse + keyframe writer
+├── vp9/frame.rs     # VP9 every-frame-type header + cross-frame state,
+│                    # §8.6.1 quantizers, §8.8.1 filter levels, superframes
 ├── ivf.rs           # IVF demuxer + muxer (VP8 / VP9 / AV1 fixtures)
 └── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame
                      # headers, sequence-header writer
@@ -183,7 +192,8 @@ input.
 - `streams` — feeds the input as an elementary stream through the
   stateful front ends a hardware bridge drives picture by picture
   (H.264 parser → POC → DPB marking → reference lists; HEVC parser →
-  POC / RPS → reference lists), asserting the
+  POC / RPS → reference lists; VP9 superframes → frame headers →
+  quantizers / filter levels), asserting the
   list sizes and a bounded DPB.
 - `parsers` — drives the per-codec header parsers (H.264 incl. SEI,
   HEVC, H.266 incl. APS + SEI, MPEG-2, VC-1, VP8, VP9, AV1 metadata,
