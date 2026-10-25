@@ -128,6 +128,19 @@ src/
                      # §7.21), set_frame_refs, setup_shear, tile groups
 ```
 
+## Full-stream decode front ends
+
+Each codec has a parser → header → reference-state chain a hardware
+bridge drives picture by picture; the GPU never needs a software codec
+crate:
+
+| Codec | Per unit | Reference state | Parameter-buffer extras |
+| - | - | - | - |
+| H.264 | `h264::stream::H264Parser::process_nal` → `H264Event::Slice` (full `SliceHeader`, `first_of_picture`, `slice_data_bit_offset`) | `h264::dpb::Dpb`: `begin_picture` (POC, frame_num gaps, field pairing) → `ref_pic_lists` per slice → `finish_picture` (marking, released keys); `references()` for ReferenceFrames | `h264::scaling::picture_scaling_matrix`, `H264Sps::crop_rect` |
+| HEVC | `hevc::stream::HevcParser::process_nal` → `HevcEvent::Slice` (full `SliceSegmentHeader` incl. `slice_data_byte_offset`, `header_emulation_bytes`, `st_rps_bits`) | `hevc::dpb::HevcDpb`: `begin_picture` (POC, RPS lists, RASL `skip`) → `ref_pic_lists` → `finish_picture`; `end_of_sequence()` | `hevc::scaling::HevcScalingLists::in_effect`, `hevc::slice::tile_sizes_in_ctbs` |
+| VP9 | `vp9::frame::split_superframe` → `Vp9State::decode_frame_header` | `Vp9State` (slot sizes / colour, persistent LF deltas + segmentation) | `Vp9FrameHeader::{dc_quant, ac_quant, loop_filter_levels}` |
+| AV1 | `av1::iter_obus` → `av1::sequence::parse_sequence_header_obu` / `Av1RefState::parse_frame_header` → `av1::frame::parse_tile_group` | `Av1RefState::update` after the last tile group (or a show_existing header) | `av1::frame::setup_shear` (global-motion validity), film grain in force |
+
 ## NAL byte-framing helpers
 
 `nal::ebsp_to_rbsp` strips `emulation_prevention_three_byte` (`0x03`)

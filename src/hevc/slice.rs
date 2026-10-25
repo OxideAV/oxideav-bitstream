@@ -782,3 +782,92 @@ fn parse_pred_weight_table(
     }
     Ok(t)
 }
+
+/// Tile column widths and row heights in CTBs (§6.5.1, eq. 6-3 / 6-4):
+/// `([colWidth[]], [rowHeight[]])`, one entry per tile (a single tile
+/// spanning the picture without tiles).
+pub fn tile_sizes_in_ctbs(
+    sps: &HevcSps,
+    pps: &HevcPps,
+) -> Result<(Vec<u32>, Vec<u32>), BitstreamError> {
+    let log2 = u32::from(sps.log2_min_luma_coding_block_size_minus3)
+        + 3
+        + u32::from(sps.log2_diff_max_min_luma_coding_block_size);
+    if !(3..=6).contains(&log2) {
+        return Err(BitstreamError::invalid(format!("CtbLog2SizeY={log2}")));
+    }
+    let ctb = 1u32 << log2;
+    let w = sps.pic_width_in_luma_samples.div_ceil(ctb);
+    let h = sps.pic_height_in_luma_samples.div_ceil(ctb);
+    let Some(t) = pps.tiles.as_ref() else {
+        return Ok((vec![w], vec![h]));
+    };
+    let split = |n_minus1: u32, total: u32, explicit: &[u32]| -> Result<Vec<u32>, BitstreamError> {
+        let n = n_minus1 + 1;
+        if n > total {
+            return Err(BitstreamError::invalid("more tiles than CTBs"));
+        }
+        let mut out: Vec<u32> = if t.uniform_spacing_flag {
+            (0..n)
+                .map(|i| ((i + 1) * total) / n - (i * total) / n)
+                .collect()
+        } else {
+            let mut v: Vec<u32> = explicit
+                .iter()
+                .take(n_minus1 as usize)
+                .map(|&x| x + 1)
+                .collect();
+            let used: u32 = v.iter().sum();
+            if used >= total || v.len() != n_minus1 as usize {
+                return Err(BitstreamError::invalid(
+                    "explicit tile sizes exceed the picture",
+                ));
+            }
+            v.push(total - used);
+            v
+        };
+        out.truncate(n as usize);
+        Ok(out)
+    };
+    Ok((
+        split(t.num_tile_columns_minus1, w, &t.column_widths_minus1)?,
+        split(t.num_tile_rows_minus1, h, &t.row_heights_minus1)?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hevc::HevcTiles;
+
+    #[test]
+    fn uniform_and_explicit_tile_sizes() {
+        let sps = HevcSps {
+            log2_min_luma_coding_block_size_minus3: 0,
+            log2_diff_max_min_luma_coding_block_size: 3,
+            pic_width_in_luma_samples: 30 * 64,
+            pic_height_in_luma_samples: 64,
+            ..HevcSps::default()
+        };
+        let mut pps = HevcPps {
+            tiles: Some(HevcTiles {
+                num_tile_columns_minus1: 3,
+                uniform_spacing_flag: true,
+                ..HevcTiles::default()
+            }),
+            ..HevcPps::default()
+        };
+        // eq. 6-3 over 30 CTBs in 4 columns: 7, 8, 7, 8.
+        assert_eq!(
+            tile_sizes_in_ctbs(&sps, &pps).unwrap(),
+            (vec![7, 8, 7, 8], vec![1])
+        );
+        let t = pps.tiles.as_mut().unwrap();
+        t.uniform_spacing_flag = false;
+        t.column_widths_minus1 = vec![9, 9, 4];
+        assert_eq!(
+            tile_sizes_in_ctbs(&sps, &pps).unwrap().0,
+            vec![10, 10, 5, 5]
+        );
+    }
+}

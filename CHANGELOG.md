@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified against `trace_headers` on x265 open-GOP B-pyramid (CRA +
   RASL, WPP, two slices), weighted + scaling-list, Main 10, tiles,
   multi-slice and WPP streams, and POC against presentation order.
+  `hevc::slice::tile_sizes_in_ctbs` gives the §6.5.1 tile column
+  widths / row heights.
 - vp9: `vp9::frame` — the uncompressed header of every frame type
   (key, inter with `frame_size_with_refs()`, intra-only incl. the
   profile 0 colour inference, `show_existing_frame`) parsed against a
