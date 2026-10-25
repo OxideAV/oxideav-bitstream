@@ -38,15 +38,15 @@ three HW bridges share, without the SW-codec baggage.
 | SPS/PPS **writers** (byte-exact parse→write inverses) | yes — pinned byte-exact on both fixtures | yes — VPS+SPS+PPS, pinned byte-exact on the fixture (lossless PTL / ST-RPS-coding / ordering-info retention) | **VPS + SPS + PPS byte-exact** on their complete walks, plus OPI / DCI / APS / AUD / SEI (incl. a lossless `profile_tier_level`/GCI walk) | sequence-header OBU writer, byte-exact on the fixture |
 | SEI / metadata | framing (§7.3.2.3) + buffering_period / pic_timing / itu_t_t35 / user_data_unregistered / recovery_point (§D.1), writer included | framing (§7.3.5) + typed decode **and encode**: HDR payloads (MDCV/CLL), t35, unregistered, recovery point, plus HRD-coupled buffering_period / pic_timing (§D.2.2/§D.2.3) against an `SeiHrdContext` | framing (§7.3.6) + **all** Annex-D payloads (BP / PT / DUI / nesting / SLI / manifest / prefix indication / CREI), decode + byte-exact encode; APS families (ALF / LMCS / scaling lists) parse + byte-exact write | metadata OBU §5.8 — HDR CLL/MDCV, scalability structure, ITU-T T.35, timecode; parse + write |
 | Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
-| Complete slice / frame header, every picture type | **yes** — `h264::slice` (I/P/B/SP/SI: list modification, pred weights, MMCO, field/MBAFF, slice-data offset) | **yes** — `hevc::slice` (inline / SPS ST-RPS incl. inter-set prediction, LT pictures, list modification, pred weights, collocated / TMVP, entry points, dependent segments, slice-data byte offset + emulation count, inline-RPS bit size) | deferred | — |
-| Stream front end (parameter-set tables, per-NAL events, picture boundaries) | **yes** — `h264::stream` (§7.4.1.2.4) | **yes** — `hevc::stream` | — | — |
-| Picture order count + reference state (DPB marking, list construction) | **yes** — `h264::poc` (types 0/1/2) + `h264::dpb` (frame stores, §8.2.4 frames/fields, §8.2.5 sliding window / MMCO 1–6, frame_num gaps) | **yes** — `hevc::dpb` (NoRaslOutputFlag + RASL skip, §8.3.1 POC, §8.3.2 RPS marking, §8.3.4 lists) | — | — |
+| Complete slice / frame header, every picture type | **yes** — `h264::slice` (I/P/B/SP/SI: list modification, pred weights, MMCO, field/MBAFF, slice-data offset) | **yes** — `hevc::slice` (inline / SPS ST-RPS incl. inter-set prediction, LT pictures, list modification, pred weights, collocated / TMVP, entry points, dependent segments, slice-data byte offset + emulation count, inline-RPS bit size) | deferred | **yes** — `av1::frame` (key / inter / intra-only / switch / show_existing; frame ids, ref_order_hint, short ref signaling, superres, tiles, quant + QM, segmentation, delta q/lf, LF, CDEF, LR, TX mode, skip mode, global motion, film grain) + `av1::sequence` (all operating points, decoder model) + tile groups |
+| Stream front end (parameter-set tables, per-NAL events, picture boundaries) | **yes** — `h264::stream` (§7.4.1.2.4) | **yes** — `hevc::stream` | — | `av1::iter_obus` |
+| Picture order count + reference state (DPB marking, list construction) | **yes** — `h264::poc` (types 0/1/2) + `h264::dpb` (frame stores, §8.2.4 frames/fields, §8.2.5 sliding window / MMCO 1–6, frame_num gaps) | **yes** — `hevc::dpb` (NoRaslOutputFlag + RASL skip, §8.3.1 POC, §8.3.2 RPS marking, §8.3.4 lists) | — | **yes** — `av1::frame::Av1RefState` (§7.20 update / §7.21 load, `load_previous()` / `setup_past_independence()`, §7.8 set_frame_refs, setup_shear) |
 | Scaling lists in effect (fall-back rules, defaults, scans) | **yes** — `h264::scaling` | **yes** — `hevc::scaling` (Tables 7-5/7-6, list prediction, DC, diagonal scan) | — | — |
 | Access unit delimiter (AUD) parse + write | yes (`primary_pic_type` u(3)) | yes (`pic_type` u(3), incl. reserved-value pass-through) | yes (`aud_irap_or_gdr_flag` u(1) + `aud_pic_type` u(3), incl. reserved-value pass-through) | n/a (OBU framing handles AU boundaries) |
 | DCT, entropy decode, motion compensation, in-loop filtering | no | no | no | no |
 | FMO / ASO / multiple slice groups | rejected | n/a | n/a | n/a |
 | SCC / multilayer / 3D extension payloads | n/a | rejected (presence flags parse) | n/a | n/a |
-| AV1 decoder model / operating points beyond [0] / film grain | n/a | n/a | n/a | rejected |
+| AV1 decoder model / operating points beyond [0] / film grain | n/a | n/a | n/a | rejected by the key-frame `parse_sequence_header`; parsed by `av1::sequence` / `av1::frame` |
 
 The crate refuses inputs that fall outside the supported envelope with
 `BitstreamError::Unsupported(reason)` rather than silently producing
@@ -121,8 +121,11 @@ src/
 ├── vp9/frame.rs     # VP9 every-frame-type header + cross-frame state,
 │                    # §8.6.1 quantizers, §8.8.1 filter levels, superframes
 ├── ivf.rs           # IVF demuxer + muxer (VP8 / VP9 / AV1 fixtures)
-└── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame
-                     # headers, sequence-header writer
+├── av1.rs           # AV1 leb128 reader+writer, OBU walker+emitter, key-frame
+│                    # headers, sequence-header writer
+├── av1/sequence.rs  # AV1 complete sequence header (all operating points)
+└── av1/frame.rs     # AV1 every-frame-type header + reference state (§7.20/
+                     # §7.21), set_frame_refs, setup_shear, tile groups
 ```
 
 ## NAL byte-framing helpers
@@ -193,7 +196,8 @@ input.
   stateful front ends a hardware bridge drives picture by picture
   (H.264 parser → POC → DPB marking → reference lists; HEVC parser →
   POC / RPS → reference lists; VP9 superframes → frame headers →
-  quantizers / filter levels), asserting the
+  quantizers / filter levels; AV1 OBUs → sequence / frame headers →
+  reference state → tile groups), asserting the
   list sizes and a bounded DPB.
 - `parsers` — drives the per-codec header parsers (H.264 incl. SEI,
   HEVC, H.266 incl. APS + SEI, MPEG-2, VC-1, VP8, VP9, AV1 metadata,

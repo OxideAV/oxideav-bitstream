@@ -71,9 +71,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scaled references, resizing, segmentation features, lf deltas,
   frame-parallel, 10-bit, 4:4:4, lossless) and the in-force state
   against the decode traces staged in `docs/video/vp9/fixtures/`.
+- av1: `av1::sequence::parse_sequence_header_obu` — the complete
+  §5.5 sequence header (every operating point, `decoder_model_info()`,
+  operating parameters, initial display delays). `av1::frame` — the
+  §5.9 uncompressed header for key, inter, intra-only and switch
+  frames and `show_existing_frame` against `Av1RefState`: frame ids
+  with `mark_ref_frames()`, `ref_order_hint[]`, short reference
+  signaling via the §7.8 set_frame_refs process, `frame_size_with_refs()`,
+  superres, uniform / explicit tile info, quantization with matrices,
+  segmentation and loop filter deltas from `load_previous()` or
+  `setup_past_independence()`, delta q / lf, CDEF, loop restoration,
+  TX mode, reference select, skip mode frames, warped motion, global
+  motion decoded against `PrevGmParams`, film grain incl.
+  `load_grain_params()`, lossless derivation; `Av1RefState::update` is
+  the §7.20 reference frame update (after the §7.21 load for a shown
+  existing key frame). Also `setup_shear()` (§7.11.3.6 with the
+  §7.11.3.7 `Div_Lut`, checked against the spec text),
+  `default_gm_params()`, `LOOP_FILTER_REF_DELTAS_DEFAULT`,
+  `parse_tile_group()` and `av1::iter_obus`. Verified against
+  `trace_headers` on 39 committed streams (and all 140 staged in
+  `docs/video/av1/fixtures/` locally): short refs, switch frames,
+  error resilience, frame ids, show_existing frames, global motion,
+  film grain (AR, CSFL, lag 3, predicted), superres + tiles, tile
+  groups, segmentation, QM, delta q/lf, LR, CDEF, skip mode, temporal
+  / spatial layers, 10/12-bit, monochrome, 4:4:4, SVT-AV1 random access
+  with overlays.
 - fuzz: new `streams` target drives elementary streams through the
   stateful front ends (H.264 parser + POC + DPB, HEVC parser + RPS +
-  lists, VP9 superframes + header state); the `parsers` target also runs the complete H.264 slice
+  lists, VP9 superframes + header state, AV1 OBUs + frame header state +
+  tile groups); the `parsers` target also runs the complete H.264 slice
   header and HEVC slice segment header.
 - h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
   syntax element of `video_parameter_set_rbsp()` including the

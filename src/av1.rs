@@ -52,6 +52,10 @@ pub const FRAME_TYPE_INTER: u8 = 1;
 pub const FRAME_TYPE_INTRA_ONLY: u8 = 2;
 pub const FRAME_TYPE_SWITCH: u8 = 3;
 
+pub mod frame;
+pub mod sequence;
+mod tables;
+
 // ─────────────────────────── OBU header / leb128 ─────────────────────────────
 
 /// Decoded OBU header (5.3.2 + 5.3.3).
@@ -136,6 +140,29 @@ pub fn read_obu(
         payload_end,
         payload_end,
     ))
+}
+
+/// Iterate the OBUs of a low-overhead bitstream format buffer (a
+/// temporal unit, an `av1C` configOBUs field, …): each item is the OBU
+/// header and its payload.
+pub fn iter_obus(bytes: &[u8]) -> impl Iterator<Item = Result<(ObuHeader, &[u8]), BitstreamError>> {
+    let mut at = 0usize;
+    let mut failed = false;
+    std::iter::from_fn(move || {
+        if failed || at >= bytes.len() {
+            return None;
+        }
+        match read_obu(bytes, at) {
+            Ok((h, start, end, next)) => {
+                at = next;
+                Some(Ok((h, &bytes[start..end])))
+            }
+            Err(e) => {
+                failed = true;
+                Some(Err(e))
+            }
+        }
+    })
 }
 
 /// 4.10 leb128 reader. Returns `(value, bytes_consumed)`. Limits

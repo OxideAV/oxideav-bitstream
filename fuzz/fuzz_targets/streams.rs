@@ -16,7 +16,56 @@ fuzz_target!(|data: &[u8]| {
     drive_h264(data);
     drive_hevc(data);
     drive_vp9(data);
+    drive_av1(data);
 });
+
+/// AV1: an IVF stream (or the input as one temporal unit) of OBUs
+/// through the sequence header, the frame header state machine and the
+/// tile group layout.
+fn drive_av1(data: &[u8]) {
+    use oxideav_bitstream::av1::frame::{Av1RefState, parse_tile_group, setup_shear};
+    use oxideav_bitstream::av1::sequence::parse_sequence_header_obu;
+    use oxideav_bitstream::av1::{OBU_FRAME, OBU_FRAME_HEADER, OBU_SEQUENCE_HEADER, iter_obus};
+    let units: Vec<&[u8]> = match oxideav_bitstream::ivf::parse_all(data) {
+        Ok((_, frames)) => frames.iter().map(|f| f.payload).collect(),
+        Err(_) => vec![data],
+    };
+    let mut seq = None;
+    let mut state = Av1RefState::new();
+    for tu in units {
+        for obu in iter_obus(tu) {
+            let Ok((h, payload)) = obu else {
+                break;
+            };
+            match h.obu_type {
+                OBU_SEQUENCE_HEADER => {
+                    if let Ok(s) = parse_sequence_header_obu(payload) {
+                        seq = Some(s);
+                    }
+                }
+                OBU_FRAME_HEADER | OBU_FRAME => {
+                    let Some(s) = seq.as_ref() else {
+                        continue;
+                    };
+                    let Ok(f) = state.parse_frame_header(s, payload, h.temporal_id, h.spatial_id)
+                    else {
+                        continue;
+                    };
+                    for gm in &f.global_motion.gm_params {
+                        let _ = setup_shear(gm);
+                    }
+                    if h.obu_type == OBU_FRAME && !f.show_existing_frame {
+                        if let Some(body) = payload.get(f.header_bits.div_ceil(8)..) {
+                            let _ = parse_tile_group(&f.tile_info, body);
+                        }
+                    }
+                    state.update(s, &f);
+                }
+                _ => {}
+            }
+        }
+    }
+}
 
 /// VP9: an IVF stream (or, failing that, the input as one chunk) of
 /// frames / superframes through the header state machine and the
