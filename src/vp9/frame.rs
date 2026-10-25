@@ -61,12 +61,13 @@ pub enum Vp9InterpolationFilter {
 }
 
 impl Vp9InterpolationFilter {
-    /// The spec's numeric type (EIGHTTAP_SMOOTH 0, EIGHTTAP 1,
-    /// EIGHTTAP_SHARP 2, BILINEAR 3, SWITCHABLE 4).
+    /// The spec's numeric `interpolation_filter` value (§7.2.7: EIGHTTAP 0,
+    /// EIGHTTAP_SMOOTH 1, EIGHTTAP_SHARP 2, BILINEAR 3, SWITCHABLE 4) — the
+    /// type after the `literal_to_type` mapping, not the coded literal.
     pub fn type_code(self) -> u8 {
         match self {
-            Vp9InterpolationFilter::EightTapSmooth => 0,
-            Vp9InterpolationFilter::EightTap => 1,
+            Vp9InterpolationFilter::EightTap => 0,
+            Vp9InterpolationFilter::EightTapSmooth => 1,
             Vp9InterpolationFilter::EightTapSharp => 2,
             Vp9InterpolationFilter::Bilinear => 3,
             Vp9InterpolationFilter::Switchable => 4,

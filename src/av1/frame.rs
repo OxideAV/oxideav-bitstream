@@ -269,6 +269,10 @@ pub struct Av1LoopFilter {
     /// `[0]` / `[1]` luma vertical / horizontal, `[2]` U, `[3]` V.
     pub level: [u8; 4],
     pub sharpness: u8,
+    /// `loop_filter_delta_enabled`. On frames where `loop_filter_params()`
+    /// codes nothing (coded lossless or `allow_intrabc`), this is not a coded
+    /// value: it is `true` when `primary_ref_frame == PRIMARY_REF_NONE` (the
+    /// §7.20 default deltas are in force) and `false` otherwise.
     pub delta_enabled: bool,
     pub delta_update: bool,
     pub ref_deltas: [i8; TOTAL_REFS_PER_FRAME],

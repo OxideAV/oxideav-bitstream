@@ -361,3 +361,16 @@ fn quantizers_follow_8_6_1() {
     assert_eq!(lvl[0][1], [8, 8]);
     assert_eq!(lvl[0][2], [7, 7]);
 }
+
+/// §7.2.7: `interpolation_filter` numbers EIGHTTAP 0, EIGHTTAP_SMOOTH 1,
+/// EIGHTTAP_SHARP 2, BILINEAR 3, SWITCHABLE 4 — the type after the
+/// `literal_to_type` mapping, not the coded literal.
+#[test]
+fn interpolation_filter_type_codes_follow_the_semantics_table() {
+    use oxideav_bitstream::vp9::frame::Vp9InterpolationFilter as F;
+    assert_eq!(F::EightTap.type_code(), 0);
+    assert_eq!(F::EightTapSmooth.type_code(), 1);
+    assert_eq!(F::EightTapSharp.type_code(), 2);
+    assert_eq!(F::Bilinear.type_code(), 3);
+    assert_eq!(F::Switchable.type_code(), 4);
+}

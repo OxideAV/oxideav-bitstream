@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- vp9: `Vp9InterpolationFilter::type_code()` returned EIGHTTAP_SMOOTH = 0 / EIGHTTAP = 1; it now follows the §7.2.7 semantics table (EIGHTTAP 0, EIGHTTAP_SMOOTH 1). Parsing was already correct; only the numeric code was swapped.
+- docs: `HevcConformanceWindow` holds the coded `conf_win_*_offset` values (chroma-subsampled units), not luma samples; `Av1LoopFilter::delta_enabled` documents its value on frames where `loop_filter_params()` codes nothing.
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.2...v0.0.3) - 2026-10-25
 
 ### Other

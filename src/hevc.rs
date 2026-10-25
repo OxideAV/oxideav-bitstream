@@ -168,7 +168,10 @@ pub struct HevcSubLayerProfile {
     pub constraint_bits: u64,
 }
 
-/// Conformance cropping rectangle, in luma samples.
+/// Conformance cropping rectangle as coded (`conf_win_*_offset`, §7.4.3.2.1):
+/// raw offsets in chroma-subsampled units, not luma samples — multiply the
+/// horizontal pair by `SubWidthC` and the vertical pair by `SubHeightC` to get
+/// luma samples.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HevcConformanceWindow {
     pub left: u32,
