@@ -12,6 +12,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - edition 2024, MSRV 1.95.
 
 ### Added
+- h264: full-stream front end for hardware decode bridges.
+  `h264::slice::parse_slice_header` walks the complete §7.3.3 slice
+  header for I/P/B/SP/SI slices (ref_pic_list_modification,
+  pred_weight_table with §7.4.3.2 inferred defaults, dec_ref_pic_marking
+  incl. every MMCO, field / MBAFF fields, QP / deblocking) and records
+  where `slice_data()` starts (RBSP bits and the escaped in-NAL bit
+  offset). `h264::stream::H264Parser` keeps SPS/PPS tables, yields
+  per-NAL events and detects the first slice of each primary picture
+  (§7.4.1.2.4). `h264::poc` derives picture order counts of types 0/1/2
+  (§8.2.1) with their cross-picture state and the MMCO 5 rebasing.
+  `h264::dpb::Dpb` is a frame-store DPB: picture numbers (§8.2.4.1),
+  P/B list initialisation for frames and fields incl. the §8.2.4.2.5
+  parity interleave, list modification (§8.2.4.3), IDR / sliding-window
+  / MMCO 1–6 marking (§8.2.5), gaps in frame_num with non-existing
+  frames (§8.2.5.2) and field pairing into one store.
+  `h264::scaling` gives the scaling lists in effect (Table 7-2 fall-back
+  rules A/B, Tables 7-3/7-4 defaults, Table 8-13/8-14 scans).
+  `H264Sps` gains `max_frame_num` / `max_pic_order_cnt_lsb` /
+  `pic_width_in_mbs` / `frame_height_in_mbs` / `chroma_array_type` /
+  `crop_rect`; `nal::emulation_prevention_bytes_before` /
+  `rbsp_offset_to_ebsp` map RBSP offsets back into escaped NAL units.
+  Verified field by field against `trace_headers` on B-pyramid, weighted
+  (luma + chroma), MBAFF, PAFF (long-term, MMCO 1, B fields, mixed
+  frame/field), multi-ref, CAVLC-B and scaling-matrix streams, the DPB
+  contents after every reference picture against `ffmpeg -debug mmco`,
+  and POC order against container presentation order.
+- fuzz: new `streams` target drives elementary streams through the
+  stateful front ends (H.264 parser + POC + DPB); the `parsers` target
+  also runs the complete H.264 slice header.
 - h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
   syntax element of `video_parameter_set_rbsp()` including the
   multi-layer machinery (inter-layer dependency block, OLS modes

@@ -111,6 +111,42 @@ pub fn rbsp_to_ebsp(rbsp: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Number of `emulation_prevention_three_byte`s among the escaped
+/// bytes that carry the first `rbsp_len` RBSP bytes of a payload.
+///
+/// Hardware decode APIs address the slice data inside the *escaped*
+/// NAL unit while header parsers work on the RBSP: the escaped offset
+/// of RBSP byte `n` is `n + emulation_prevention_bytes_before(ebsp, n)`.
+/// The rule is the one [`ebsp_to_rbsp`] undoes (H.264 / H.265 §7.4.1.1,
+/// H.266 §7.4.2.1).
+pub fn emulation_prevention_bytes_before(ebsp: &[u8], rbsp_len: usize) -> usize {
+    let (mut i, mut produced, mut removed) = (0usize, 0usize, 0usize);
+    let n = ebsp.len();
+    while i < n && produced < rbsp_len {
+        if i + 2 < n && ebsp[i] == 0 && ebsp[i + 1] == 0 && ebsp[i + 2] == 3 {
+            // The two zeros are payload; the 0x03 is not.
+            let take = (rbsp_len - produced).min(2);
+            produced += take;
+            // The 0x03 lies before RBSP byte `rbsp_len` only when both
+            // zeros were inside the range.
+            if take == 2 {
+                removed += 1;
+            }
+            i += 3;
+        } else {
+            produced += 1;
+            i += 1;
+        }
+    }
+    removed
+}
+
+/// Escaped (EBSP) byte offset of RBSP byte `rbsp_offset` — the inverse
+/// mapping of [`ebsp_to_rbsp`] for one position.
+pub fn rbsp_offset_to_ebsp(ebsp: &[u8], rbsp_offset: usize) -> usize {
+    rbsp_offset + emulation_prevention_bytes_before(ebsp, rbsp_offset)
+}
+
 // ─────────────────────────── Framing conversion ─────────────────────────────
 //
 // The same elementary stream travels in two framings:
@@ -451,5 +487,22 @@ mod tests {
                 assert_eq!(reframed, ebsp);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+
+    #[test]
+    fn emulation_bytes_before_an_rbsp_offset() {
+        // RBSP 00 00 01 00 00 02 → EBSP 00 00 03 01 00 00 03 02.
+        let ebsp = [0, 0, 3, 1, 0, 0, 3, 2];
+        assert_eq!(ebsp_to_rbsp(&ebsp), [0, 0, 1, 0, 0, 2]);
+        assert_eq!(emulation_prevention_bytes_before(&ebsp, 1), 0);
+        assert_eq!(emulation_prevention_bytes_before(&ebsp, 2), 1);
+        assert_eq!(rbsp_offset_to_ebsp(&ebsp, 2), 3);
+        assert_eq!(rbsp_offset_to_ebsp(&ebsp, 5), 7);
+        assert_eq!(emulation_prevention_bytes_before(&ebsp, 6), 2);
     }
 }

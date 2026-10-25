@@ -213,6 +213,17 @@ fn drive_h264_with_context(data: &[u8]) {
     // the slice parser is contracted to accept.
     if let (Ok(sps), Ok(pps)) = (h264::parse_sps(head), parse_h264_pps_from(head)) {
         let _ = h264::parse_slice_header_minimal(tail, nal_unit_type, &sps, &pps);
+        // The complete slice header (every slice type, both NAL kinds).
+        let nal_ref_idc = (data[1] >> 5) & 3;
+        for t in [1u8, 5] {
+            let _ = h264::slice::parse_slice_header(
+                tail,
+                t,
+                nal_ref_idc.max(u8::from(t == 5)),
+                &sps,
+                &pps,
+            );
+        }
         // SPS-coupled SEI decoders (buffering_period / pic_timing read
         // u(v) fields whose widths come from the recovered SPS's HRD).
         if let Ok(msgs) = h264::sei::parse_sei_rbsp(tail) {

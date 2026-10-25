@@ -29,7 +29,12 @@
 use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 
+pub mod dpb;
+pub mod poc;
+pub mod scaling;
 pub mod sei;
+pub mod slice;
+pub mod stream;
 
 // ─────────────────────────── NAL unit types ──────────────────────────────────
 
@@ -530,6 +535,61 @@ impl H264Sps {
         matches!(
             profile_idc,
             100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+        )
+    }
+
+    /// `MaxFrameNum` (eq. 7-10).
+    pub fn max_frame_num(&self) -> u32 {
+        1u32 << (u32::from(self.log2_max_frame_num_minus4) + 4)
+    }
+
+    /// `MaxPicOrderCntLsb` (eq. 7-11).
+    pub fn max_pic_order_cnt_lsb(&self) -> u32 {
+        1u32 << (u32::from(self.log2_max_pic_order_cnt_lsb_minus4) + 4)
+    }
+
+    /// `PicWidthInMbs` (eq. 7-13).
+    pub fn pic_width_in_mbs(&self) -> u32 {
+        self.pic_width_in_mbs_minus1.saturating_add(1)
+    }
+
+    /// `PicHeightInMapUnits` (eq. 7-16).
+    pub fn pic_height_in_map_units(&self) -> u32 {
+        self.pic_height_in_map_units_minus1.saturating_add(1)
+    }
+
+    /// `FrameHeightInMbs` (eq. 7-18).
+    pub fn frame_height_in_mbs(&self) -> u32 {
+        (2 - u32::from(self.frame_mbs_only_flag)).saturating_mul(self.pic_height_in_map_units())
+    }
+
+    /// `ChromaArrayType` (§7.4.2.1.1): 0 with separate colour planes,
+    /// otherwise `chroma_format_idc`.
+    pub fn chroma_array_type(&self) -> u8 {
+        if self.separate_colour_plane_flag {
+            0
+        } else {
+            self.chroma_format_idc
+        }
+    }
+
+    /// The frame cropping rectangle in luma samples (eq. 7-19 … 7-22):
+    /// `(left, top, width, height)` of the output window.
+    pub fn crop_rect(&self) -> (u32, u32, u32, u32) {
+        let (cx, cy) = if self.chroma_array_type() == 0 {
+            (1, 2 - u32::from(self.frame_mbs_only_flag))
+        } else {
+            (
+                self.sub_width_c(),
+                self.sub_height_c() * (2 - u32::from(self.frame_mbs_only_flag)),
+            )
+        };
+        let c = self.frame_cropping.unwrap_or_default();
+        (
+            c.left.saturating_mul(cx),
+            c.top.saturating_mul(cy),
+            self.display_width(),
+            self.display_height(),
         )
     }
 

@@ -38,6 +38,10 @@ three HW bridges share, without the SW-codec baggage.
 | SPS/PPS **writers** (byte-exact parse→write inverses) | yes — pinned byte-exact on both fixtures | yes — VPS+SPS+PPS, pinned byte-exact on the fixture (lossless PTL / ST-RPS-coding / ordering-info retention) | **VPS + SPS + PPS byte-exact** on their complete walks, plus OPI / DCI / APS / AUD / SEI (incl. a lossless `profile_tier_level`/GCI walk) | sequence-header OBU writer, byte-exact on the fixture |
 | SEI / metadata | framing (§7.3.2.3) + buffering_period / pic_timing / itu_t_t35 / user_data_unregistered / recovery_point (§D.1), writer included | framing (§7.3.5) + typed decode **and encode**: HDR payloads (MDCV/CLL), t35, unregistered, recovery point, plus HRD-coupled buffering_period / pic_timing (§D.2.2/§D.2.3) against an `SeiHrdContext` | framing (§7.3.6) + **all** Annex-D payloads (BP / PT / DUI / nesting / SLI / manifest / prefix indication / CREI), decode + byte-exact encode; APS families (ALF / LMCS / scaling lists) parse + byte-exact write | metadata OBU §5.8 — HDR CLL/MDCV, scalability structure, ITU-T T.35, timecode; parse + write |
 | Minimal slice header (IDR / I-slice / KEY_FRAME) | yes | yes | deferred | yes |
+| Complete slice / frame header, every picture type | **yes** — `h264::slice` (I/P/B/SP/SI: list modification, pred weights, MMCO, field/MBAFF, slice-data offset) | — | deferred | — |
+| Stream front end (parameter-set tables, per-NAL events, picture boundaries) | **yes** — `h264::stream` (§7.4.1.2.4) | — | — | — |
+| Picture order count + reference state (DPB marking, list construction) | **yes** — `h264::poc` (types 0/1/2) + `h264::dpb` (frame stores, §8.2.4 frames/fields, §8.2.5 sliding window / MMCO 1–6, frame_num gaps) | — | — | — |
+| Scaling lists in effect (fall-back rules, defaults, scans) | **yes** — `h264::scaling` | — | — | — |
 | Access unit delimiter (AUD) parse + write | yes (`primary_pic_type` u(3)) | yes (`pic_type` u(3), incl. reserved-value pass-through) | yes (`aud_irap_or_gdr_flag` u(1) + `aud_pic_type` u(3), incl. reserved-value pass-through) | n/a (OBU framing handles AU boundaries) |
 | DCT, entropy decode, motion compensation, in-loop filtering | no | no | no | no |
 | FMO / ASO / multiple slice groups | rejected | n/a | n/a | n/a |
@@ -74,6 +78,12 @@ src/
 │                    # H.265 7.4.1.1 / H.266 7.3.1.1 +7.4.2.1)
 ├── h264.rs          # H.264 SPS / PPS / minimal slice header
 │                    # (re-exports ebsp_to_rbsp from nal)
+├── h264/slice.rs    # H.264 complete slice header (§7.3.3)
+├── h264/stream.rs   # H.264 parameter-set tables + per-NAL events +
+│                    # first-slice-of-picture detection (§7.4.1.2.4)
+├── h264/poc.rs      # H.264 picture order count types 0/1/2 (§8.2.1)
+├── h264/dpb.rs      # H.264 frame-store DPB: §8.2.4 lists, §8.2.5 marking
+├── h264/scaling.rs  # H.264 scaling lists in effect (Table 7-2 rules)
 ├── hevc.rs          # HEVC VPS / SPS / PPS / minimal slice header
 │                    # (re-exports ebsp_to_rbsp from nal)
 ├── h266.rs          # H.266 Annex-B walker + NAL header +
@@ -156,7 +166,7 @@ plus a slice (or set of slices) of bytes the HW decoder consumes.
 
 ## Fuzzing
 
-`fuzz/` holds two `cargo fuzz` panic-hardening targets. Because this
+`fuzz/` holds three `cargo fuzz` panic-hardening targets. Because this
 crate parses attacker-controlled bitstream bytes to populate GPU
 parameter buffers, every entry point must return `Ok` / `Err` — never
 panic, overflow, slice out of bounds, or loop unboundedly — on *any*
@@ -166,6 +176,10 @@ input.
   primitives (`u(n)` / `u64(n)` / `ue` / `se` / `ns` / `su` / `uvlc` /
   `le` / skips / peeks) plus the AV1 LEB128 / OBU walkers and the IVF
   demuxer, and fuzzes the writer→reader round-trip invariant.
+- `streams` — feeds the input as an elementary stream through the
+  stateful front ends a hardware bridge drives picture by picture
+  (H.264 parser → POC → DPB marking → reference lists), asserting the
+  list sizes and a bounded DPB.
 - `parsers` — drives the per-codec header parsers (H.264 incl. SEI,
   HEVC, H.266 incl. APS + SEI, MPEG-2, VC-1, VP8, VP9, AV1 metadata,
   framing converters) at multiple input-derived byte offsets, feeds
