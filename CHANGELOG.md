@@ -38,9 +38,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frame/field), multi-ref, CAVLC-B and scaling-matrix streams, the DPB
   contents after every reference picture against `ffmpeg -debug mmco`,
   and POC order against container presentation order.
+- hevc: full-stream front end. `hevc::slice::parse_slice_segment_header`
+  walks the complete §7.3.6.1 header for single-layer, non-SCC streams
+  — inline or SPS-indexed short-term RPS (inline inter-set prediction
+  with `delta_idx_minus1`), long-term pictures with eq. 7-52
+  accumulation, `ref_pic_lists_modification()`, `pred_weight_table()`
+  with the §7.4.7.3 derived weights / offsets, collocated / TMVP, QP
+  offsets, deblocking overrides, entry points, header extension,
+  `byte_alignment()` — completes dependent segments from their
+  independent segment, and reports the slice-data byte offset, the
+  emulation prevention bytes inside the header and the inline RPS bit
+  size. `hevc::stream::HevcParser` keeps VPS/SPS/PPS tables and yields
+  per-NAL events. `hevc::dpb::HevcDpb` derives NoRaslOutputFlag and
+  RASL skipping (§8.1.3), PicOrderCntVal (§8.3.1), the five RPS lists
+  with DPB marking (§8.3.2) and RefPicList0/1 (§8.3.4).
+  `hevc::scaling` resolves the scaling lists in effect (Tables 7-5/7-6,
+  list prediction, DC values, eq. 7-50 chroma 32x32, §6.5.3 scan).
+  Verified against `trace_headers` on x265 open-GOP B-pyramid (CRA +
+  RASL, WPP, two slices), weighted + scaling-list, Main 10, tiles,
+  multi-slice and WPP streams, and POC against presentation order.
 - fuzz: new `streams` target drives elementary streams through the
-  stateful front ends (H.264 parser + POC + DPB); the `parsers` target
-  also runs the complete H.264 slice header.
+  stateful front ends (H.264 parser + POC + DPB, HEVC parser + RPS +
+  lists); the `parsers` target also runs the complete H.264 slice
+  header and HEVC slice segment header.
 - h266: complete VPS walk (§7.3.2.3) — `parse_vps` now retains every
   syntax element of `video_parameter_set_rbsp()` including the
   multi-layer machinery (inter-layer dependency block, OLS modes

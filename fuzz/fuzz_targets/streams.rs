@@ -14,7 +14,52 @@ use oxideav_bitstream::h264::stream::{H264Event, H264Parser};
 
 fuzz_target!(|data: &[u8]| {
     drive_h264(data);
+    drive_hevc(data);
 });
+
+fn drive_hevc(data: &[u8]) {
+    use oxideav_bitstream::hevc::dpb::HevcDpb;
+    use oxideav_bitstream::hevc::stream::{HevcEvent, HevcParser, nal_units};
+    let mut parser = HevcParser::new();
+    let mut dpb = HevcDpb::new();
+    let mut skipping = false;
+    for nal in nal_units(data) {
+        let slice = match parser.process_nal(nal) {
+            Ok(HevcEvent::Slice(s)) => s,
+            Ok(HevcEvent::EndOfSequence) => {
+                dpb.end_of_sequence();
+                continue;
+            }
+            _ => continue,
+        };
+        let Some((sps, _)) = parser.active(&slice) else {
+            continue;
+        };
+        let sps = sps.clone();
+        if slice.first_of_picture {
+            if dpb.current().is_some() && !skipping {
+                let _ = dpb.finish_picture();
+            }
+            match dpb.begin_picture(&sps, &slice.header) {
+                Ok(c) => skipping = c.skip,
+                Err(_) => continue,
+            }
+        }
+        if dpb.current().is_none() || skipping {
+            continue;
+        }
+        if let Ok(l) = dpb.ref_pic_lists(&slice.header) {
+            let h = &slice.header;
+            if h.slice_type.is_inter() {
+                assert_eq!(l.list0.len(), h.num_ref_idx_l0_active_minus1 as usize + 1);
+            }
+        }
+        assert!(
+            dpb.references().count() <= 16,
+            "HEVC DPB grows without bound"
+        );
+    }
+}
 
 fn drive_h264(data: &[u8]) {
     let mut parser = H264Parser::new();

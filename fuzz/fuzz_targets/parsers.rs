@@ -252,6 +252,11 @@ fn drive_hevc_with_context(data: &[u8]) {
 
     if let (Ok(sps), Ok(pps)) = (hevc::parse_sps_nal(head), hevc::parse_pps_nal(&head[mid..])) {
         let _ = hevc::parse_slice_header_minimal(tail, &sps, &pps);
+        // The complete slice segment header, independent and (against
+        // the independent result) dependent.
+        if let Ok(h) = hevc::slice::parse_slice_segment_header(tail, &sps, &pps, None) {
+            let _ = hevc::slice::parse_slice_segment_header(tail, &sps, &pps, Some(&h));
+        }
     }
 }
 

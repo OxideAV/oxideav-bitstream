@@ -29,7 +29,11 @@
 use crate::BitstreamError;
 use crate::bit_reader::BitReader;
 
+pub mod dpb;
+pub mod scaling;
 pub mod sei;
+pub mod slice;
+pub mod stream;
 
 // ─────────────────────────── NAL unit types ──────────────────────────────────
 
@@ -356,14 +360,28 @@ fn parse_st_ref_pic_set(
     max_dec_pic_buffering_minus1: u32,
 ) -> Result<HevcShortTermRps, BitstreamError> {
     let inter_pred = if st_rps_idx != 0 { r.u(1) != 0 } else { false };
-    if inter_pred {
-        // delta_idx_minus1 is only coded when the set sits in a slice
-        // header (stRpsIdx == num_short_term_ref_pic_sets); in the SPS
-        // it is inferred to 0. This parser only walks SPS-resident
-        // sets, so RefRpsIdx = stRpsIdx - 1 (7-59).
-        let ref_rps = previous.last().ok_or_else(|| {
+    // delta_idx_minus1 is only coded when the set sits in a slice
+    // header (stRpsIdx == num_short_term_ref_pic_sets); in the SPS it
+    // is inferred to 0, so RefRpsIdx = stRpsIdx - 1 (7-59).
+    let ref_rps = if inter_pred {
+        Some(previous.last().ok_or_else(|| {
             BitstreamError::invalid("st_ref_pic_set inter prediction with no prior set")
-        })?;
+        })?)
+    } else {
+        None
+    };
+    parse_st_ref_pic_set_body(r, ref_rps, max_dec_pic_buffering_minus1)
+}
+
+/// The body of `st_ref_pic_set()` after `inter_ref_pic_set_prediction_flag`
+/// (and, in a slice header, `delta_idx_minus1`): `ref_rps` is the
+/// resolved `RefRpsIdx` set when the flag is 1.
+pub(crate) fn parse_st_ref_pic_set_body(
+    r: &mut BitReader<'_>,
+    ref_rps: Option<&HevcShortTermRps>,
+    max_dec_pic_buffering_minus1: u32,
+) -> Result<HevcShortTermRps, BitstreamError> {
+    if let Some(ref_rps) = ref_rps {
         let delta_rps_sign = r.u(1);
         let abs_delta_rps_minus1 = r.ue()?;
         // §7.4.8: abs_delta_rps_minus1 in 0..=2^15 - 1.
