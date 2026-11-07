@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.3...v0.0.4) - 2026-10-25
+
+### Other
+
+- interpolation_filter type codes follow the §7.2.7 semantics table (EIGHTTAP 0, EIGHTTAP_SMOOTH 1); doc the HEVC conformance window units and AV1 delta_enabled on uncoded loop-filter params
+
 ### Fixed
 
 - vp9: `Vp9InterpolationFilter::type_code()` returned EIGHTTAP_SMOOTH = 0 / EIGHTTAP = 1; it now follows the §7.2.7 semantics table (EIGHTTAP 0, EIGHTTAP_SMOOTH 1). Parsing was already correct; only the numeric code was swapped.
