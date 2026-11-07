@@ -132,6 +132,7 @@ pub fn find_first_slice(buf: &[u8]) -> Option<usize> {
 
 /// Sequence header (§6.2.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Mpeg2SequenceHeader {
     pub horizontal_size: u32,
     pub vertical_size: u32,
@@ -171,6 +172,7 @@ impl Mpeg2SequenceHeader {
 
 /// Picture header (§6.2.3).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Mpeg2PictureHeader {
     pub temporal_reference: u32,
     /// 1=I, 2=P, 3=B (4=D for MPEG-1 only).
@@ -184,6 +186,7 @@ pub struct Mpeg2PictureHeader {
 
 /// Picture coding extension (§6.2.3.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Mpeg2PictureCodingExtension {
     pub f_code: [[u8; 2]; 2],
     pub intra_dc_precision: u8,
@@ -203,6 +206,7 @@ pub struct Mpeg2PictureCodingExtension {
 /// chroma-format / progressive / colour-primaries flags that
 /// MPEG-2 layered on top of MPEG-1's sequence header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Mpeg2SequenceExtension {
     pub profile_and_level_indication: u8,
     pub progressive_sequence: bool,

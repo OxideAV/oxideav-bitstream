@@ -43,6 +43,7 @@ pub const PPS_NUM_SLICES_IN_PIC_MINUS1_MAX: u32 = 999;
 /// PPS-signalled subpicture ID mapping (§7.3.2.5, present iff
 /// `pps_subpic_id_mapping_present_flag`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPpsSubpicIdMapping {
     /// `pps_num_subpics_minus1` ue(v) — coded only when
     /// `!pps_no_pic_partition_flag`; inferred 0 otherwise. Must equal
@@ -64,6 +65,7 @@ pub struct VvcPpsSubpicIdMapping {
 /// slice (`i == pps_num_slices_in_pic_minus1`) has no syntax at all.
 /// Uncoded fields carry their §7.4.3.5 inferred values.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPpsRectSlice {
     /// `pps_slice_width_in_tiles_minus1[i]` ue(v) — coded only when
     /// the slice's top-left tile is not in the last tile column;
@@ -89,6 +91,7 @@ pub struct VvcPpsRectSlice {
 /// The `!pps_no_pic_partition_flag` tile/slice partition block
 /// (§7.3.2.5).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPpsPartition {
     /// `pps_log2_ctu_size_minus5` u(2) — 0..=2, must equal the SPS
     /// value.
@@ -124,6 +127,7 @@ pub struct VvcPpsPartition {
 
 /// The `pps_chroma_tool_offsets_present_flag` block (§7.3.2.5).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPpsChromaToolOffsets {
     /// `pps_cb_qp_offset` se(v) — −12..=12.
     pub pps_cb_qp_offset: i32,
@@ -143,6 +147,7 @@ pub struct VvcPpsChromaToolOffsets {
 
 /// The `pps_deblocking_filter_control_present_flag` block (§7.3.2.5).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPpsDeblocking {
     /// `pps_deblocking_filter_override_enabled_flag` u(1).
     pub pps_deblocking_filter_override_enabled_flag: u8,
@@ -170,6 +175,7 @@ pub struct VvcPpsDeblocking {
 /// retained (or spec-inferred when its presence condition failed), so
 /// [`write_pps`] can re-emit the RBSP byte-exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPps {
     /// `pps_pic_parameter_set_id` u(6) — 0..=63.
     pub pps_pic_parameter_set_id: u8,

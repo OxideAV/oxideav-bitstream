@@ -59,13 +59,52 @@ mod tables;
 // ─────────────────────────── OBU header / leb128 ─────────────────────────────
 
 /// Decoded OBU header (5.3.2 + 5.3.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ObuHeader {
     pub obu_type: u8,
     pub extension_flag: bool,
     pub has_size_field: bool,
     pub temporal_id: u8,
     pub spatial_id: u8,
+}
+
+impl ObuHeader {
+    /// Build `ObuHeader` from its mandatory fields; every other field takes its `Default` value.
+    pub fn new(obu_type: u8) -> Self {
+        Self {
+            obu_type,
+            ..Default::default()
+        }
+    }
+
+    /// Set `extension_flag`.
+    #[must_use]
+    pub fn with_extension_flag(mut self, extension_flag: bool) -> Self {
+        self.extension_flag = extension_flag;
+        self
+    }
+
+    /// Set `has_size_field`.
+    #[must_use]
+    pub fn with_has_size_field(mut self, has_size_field: bool) -> Self {
+        self.has_size_field = has_size_field;
+        self
+    }
+
+    /// Set `temporal_id`.
+    #[must_use]
+    pub fn with_temporal_id(mut self, temporal_id: u8) -> Self {
+        self.temporal_id = temporal_id;
+        self
+    }
+
+    /// Set `spatial_id`.
+    #[must_use]
+    pub fn with_spatial_id(mut self, spatial_id: u8) -> Self {
+        self.spatial_id = spatial_id;
+        self
+    }
 }
 
 /// Locate one OBU starting at `offset`. Returns:
@@ -343,6 +382,7 @@ pub const SCALABILITY_SS: u8 = 14;
 /// `metadata_hdr_cll()` — §5.8.3. Content light level, both fields
 /// in candelas per square metre (§6.7.3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1HdrCll {
     pub max_cll: u16,
     pub max_fall: u16,
@@ -352,6 +392,7 @@ pub struct Av1HdrCll {
 /// Chromaticities are 0.16 fixed point; `luminance_max` is 24.8 and
 /// `luminance_min` 18.14 fixed point (§6.7.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1HdrMdcv {
     /// `(primary_chromaticity_x[i], primary_chromaticity_y[i])` in
     /// R/G/B order (§6.7.4).
@@ -363,6 +404,7 @@ pub struct Av1HdrMdcv {
 
 /// `metadata_itut_t35()` — §5.8.2.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1ItutT35 {
     pub country_code: u8,
     /// Present when `country_code == 0xFF`.
@@ -374,6 +416,7 @@ pub struct Av1ItutT35 {
 
 /// One temporal-group entry of `scalability_structure()` (§5.8.6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1TemporalGroupEntry {
     pub temporal_id: u8,
     pub temporal_switching_up_point_flag: bool,
@@ -383,6 +426,7 @@ pub struct Av1TemporalGroupEntry {
 
 /// `scalability_structure()` — §5.8.6.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1ScalabilityStructure {
     pub spatial_layers_cnt_minus_1: u8,
     /// `(spatial_layer_max_width[i], spatial_layer_max_height[i])`,
@@ -397,6 +441,7 @@ pub struct Av1ScalabilityStructure {
 
 /// `metadata_timecode()` — §5.8.7.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1Timecode {
     pub counting_type: u8,
     pub full_timestamp_flag: bool,
@@ -413,6 +458,7 @@ pub struct Av1Timecode {
 
 /// A decoded `metadata_obu()` (§5.8.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Av1Metadata {
     HdrCll(Av1HdrCll),
     HdrMdcv(Av1HdrMdcv),
@@ -796,6 +842,7 @@ pub const AV1_IDENTITY_COLOR_DESCRIPTION: (u8, u8, u8) = (1, 13, 0);
 /// 5.5.4 `timing_info()`. `num_ticks_per_picture_minus_1` is `Some`
 /// iff `equal_picture_interval`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1TimingInfo {
     pub num_units_in_display_tick: u32,
     pub time_scale: u32,
@@ -805,6 +852,7 @@ pub struct Av1TimingInfo {
 /// 6.4.2 `color_config`, retained losslessly over the crate's
 /// single-operating-point envelope.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1ColorConfig {
     pub bit_depth: u8,
     pub monochrome: bool,
@@ -823,6 +871,7 @@ pub struct Av1ColorConfig {
 
 /// 6.4.1 sequence header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1SequenceHeader {
     pub seq_profile: u8,
     pub still_picture: bool,
@@ -887,6 +936,7 @@ impl Av1SequenceHeader {
 
 /// 6.8.1 frame header — minimum fields, key-frame only.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1FrameHeader {
     pub show_existing_frame: bool,
     pub frame_type: u8,
@@ -905,6 +955,7 @@ pub struct Av1FrameHeader {
 
 /// Result of [`parse_obu_stream`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Av1KeyframeParse<'a> {
     pub sequence_header: Av1SequenceHeader,
     pub frame_header: Av1FrameHeader,

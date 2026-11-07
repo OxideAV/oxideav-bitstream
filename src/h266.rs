@@ -166,7 +166,8 @@ pub use crate::nal::ebsp_to_rbsp;
 /// Two bytes on the wire:
 /// `forbidden_zero_bit f(1) | nuh_reserved_zero_bit u(1) |
 /// nuh_layer_id u(6) | nal_unit_type u(5) | nuh_temporal_id_plus1 u(3)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcNalHeader {
     /// `forbidden_zero_bit` (7.4.2.2): shall be 0 on a well-formed
     /// bitstream. Surfaced rather than checked so callers can decide
@@ -269,7 +270,8 @@ pub fn is_parameter_set(nal_unit_type: u8) -> bool {
 /// block (7.3.3.2) is **walked but not surfaced** — bridges that need
 /// it can pull it from the raw NAL body. Per-sublayer level codes are
 /// kept verbatim for any sublayer that signalled them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcProfileTierLevel {
     /// `general_profile_idc` u(7) (7.4.4.1). Only present when the
     /// caller passed `profileTierPresentFlag = 1`; `None` otherwise.
@@ -558,6 +560,7 @@ pub fn write_profile_tier_level(
 /// (type 12) tells the decoder which OLS and/or highest temporal
 /// sublayer to operate on, overriding external means.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcOpi {
     /// `Some(opi_ols_idx)` iff `opi_ols_info_present_flag`.
     pub opi_ols_idx: Option<u32>,
@@ -644,6 +647,7 @@ pub fn write_opi_nal(opi: &VvcOpi) -> Result<Vec<u8>, BitstreamError> {
 /// structures; a bitstream conforms if at least one of them is
 /// satisfied for every CVS.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcDci {
     /// `dci_reserved_zero_4bits` — zero in conforming streams;
     /// retained verbatim (decoders shall ignore the value, 7.4.3.1).
@@ -788,7 +792,8 @@ pub use pps::{
 /// gated on `sps_*` / `pps_*` flags (ALF, LMCS, virtual boundaries, RPL,
 /// partition constraints, deblocking offsets, QP delta, …) is therefore
 /// out of scope for this round.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcPictureHeader {
     /// `ph_gdr_or_irap_pic_flag` u(1) (7.4.3.8). When 1 the picture is
     /// either a GDR picture (`ph_gdr_pic_flag = 1`) or an IRAP picture
@@ -1038,7 +1043,8 @@ pub fn parse_picture_header_with_sps(
 ///   (P+I) or 2 (B+P+I); 3..=7 are reserved-for-future-use and
 ///   decoders MUST accept them per the spec's
 ///   "Decoders … shall ignore reserved values" clause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcAccessUnitDelimiter {
     /// `aud_irap_or_gdr_flag` u(1) (§7.4.3.10). When 1 the access unit
     /// contains only IRAP or GDR coded pictures.
@@ -1047,6 +1053,16 @@ pub struct VvcAccessUnitDelimiter {
     /// bitstreams use 0..=2; the parser surfaces reserved values
     /// (3..=7) verbatim per the spec's must-accept-reserved contract.
     pub aud_pic_type: u8,
+}
+
+impl VvcAccessUnitDelimiter {
+    /// Build `VvcAccessUnitDelimiter` from its mandatory fields.
+    pub fn new(aud_irap_or_gdr_flag: u8, aud_pic_type: u8) -> Self {
+        Self {
+            aud_irap_or_gdr_flag,
+            aud_pic_type,
+        }
+    }
 }
 
 /// `aud_pic_type` is u(3) so the spec range is 0..=7 (§7.4.3.10).

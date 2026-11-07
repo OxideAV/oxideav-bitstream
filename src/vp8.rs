@@ -45,6 +45,7 @@ pub const VP8_KEYFRAME_START_CODE: [u8; 3] = [0x9D, 0x01, 0x2A];
 
 /// Output of the VP8 uncompressed-header parsers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Vp8FrameHeader {
     /// 0 = keyframe (RFC 6386 calls this KEY_FRAME), 1 = interframe.
     pub frame_type: u8,

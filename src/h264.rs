@@ -108,6 +108,7 @@ pub fn nal_header(byte: u8) -> (u8, u8, u8) {
 /// `frame_crop_*_offset` evaluate to after the SubWidth/SubHeight
 /// scaling rules in 6.4 / 7.4.2.1.1.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264FrameCropping {
     pub left: u32,
     pub right: u32,
@@ -140,6 +141,7 @@ pub struct H264FrameCropping {
 ///   `list_4x4[i]` / `list_8x8[i - 6]`, in coding (zig-zag delta)
 ///   order as reconstructed by the §7.3.2.1.1.1 pseudo-code.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264ScalingLists {
     /// Number of list slots coded in the bitstream: 8 or 12 for the
     /// SPS block (§7.3.2.1.1), 6 / 8 / 12 for the PPS block
@@ -243,6 +245,7 @@ pub const H264_EXTENDED_SAR: u8 = 255;
 
 /// One CPB schedule entry from `hrd_parameters()` (§E.1.2).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264CpbEntry {
     pub bit_rate_value_minus1: u32,
     pub cpb_size_value_minus1: u32,
@@ -251,6 +254,7 @@ pub struct H264CpbEntry {
 
 /// HRD parameters (§E.1.2 / §E.2.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264HrdParameters {
     /// §E.2.2 constrains this to 0..=31; the parser enforces it.
     pub cpb_cnt_minus1: u32,
@@ -286,6 +290,7 @@ impl H264HrdParameters {
 /// surfaced; conditional fields default to 0 / false when their
 /// presence flag is clear.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264Vui {
     pub aspect_ratio_info_present_flag: bool,
     /// Table E-1. 255 = [`H264_EXTENDED_SAR`].
@@ -484,6 +489,7 @@ fn parse_vui_parameters(r: &mut BitReader<'_>) -> Result<H264Vui, BitstreamError
 ///
 /// See H.264 7.3.2.1.1 for the syntax this is filled from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264Sps {
     pub profile_idc: u8,
     /// Bits 7..0 of the constraint_set_flags + reserved_zero block
@@ -658,6 +664,7 @@ impl H264Sps {
 
 /// Picture parameter set (7.3.2.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264Pps {
     pub pic_parameter_set_id: u8,
     pub seq_parameter_set_id: u8,
@@ -697,6 +704,7 @@ pub struct H264Pps {
 /// (a) confirm we have an IDR access unit and (b) populate the HW
 /// backends' picture-info structs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264SliceHeader {
     pub first_mb_in_slice: u32,
     /// `slice_type` value as emitted; not modulo-5. 0..9.
@@ -720,6 +728,7 @@ impl H264SliceHeader {
 
 /// Convenience structure for [`parse_idr_only`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct H264IdrParse<'a> {
     pub sps: H264Sps,
     pub pps: H264Pps,
@@ -1451,10 +1460,18 @@ pub fn write_pps_nal(pps: &H264Pps) -> Result<Vec<u8>, BitstreamError> {
 /// optionally narrows the set of `slice_type` values that may appear
 /// in the primary coded picture. `primary_pic_type` is the only
 /// signalled field; everything else in the NAL is `rbsp_trailing_bits()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct H264AccessUnitDelimiter {
     /// `primary_pic_type` u(3) (§7.4.2.4 / Table 7-5). Spec range 0..=7.
     pub primary_pic_type: u8,
+}
+
+impl H264AccessUnitDelimiter {
+    /// Build `H264AccessUnitDelimiter` from its mandatory fields.
+    pub fn new(primary_pic_type: u8) -> Self {
+        Self { primary_pic_type }
+    }
 }
 
 /// `primary_pic_type` is u(3) so the spec range is 0..=7

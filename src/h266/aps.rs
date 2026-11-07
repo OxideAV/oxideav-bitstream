@@ -77,6 +77,7 @@ fn diag_scan_8x8() -> [(u8, u8); 64] {
 /// Signalled luma ALF block — present iff
 /// `alf_luma_filter_signal_flag`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcAlfLuma {
     pub alf_luma_clip_flag: bool,
     /// 0..=`NumAlfFilters − 1` (§7.4.3.18).
@@ -101,6 +102,7 @@ pub struct VvcAlfLuma {
 /// Signalled chroma ALF block — present iff
 /// `alf_chroma_filter_signal_flag`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcAlfChroma {
     pub alf_chroma_clip_flag: bool,
     /// 0..=7 (§7.4.3.18).
@@ -115,6 +117,7 @@ pub struct VvcAlfChroma {
 /// One cross-component ALF filter bank (Cb or Cr) — present iff the
 /// matching `alf_cc_c{b,r}_filter_signal_flag`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcAlfCcFilters {
     /// 0..=3 (§7.4.3.18).
     pub filters_signalled_minus1: u32,
@@ -126,6 +129,7 @@ pub struct VvcAlfCcFilters {
 
 /// `alf_data()` (§7.3.2.18).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcAlfData {
     pub alf_luma_filter_signal_flag: bool,
     /// Only coded when `aps_chroma_present_flag`; inferred `false`
@@ -502,6 +506,7 @@ fn write_alf_data(
 /// coded values at indices `lmcs_min_bin_idx..=LmcsMaxBinIdx` and the
 /// inferred zeros elsewhere.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcLmcsData {
     /// 0..=15 (§7.4.3.19).
     pub lmcs_min_bin_idx: u32,
@@ -649,6 +654,7 @@ fn write_lmcs_data(
 /// coded (chroma ids without `aps_chroma_present_flag`) keep
 /// `scaling_list_copy_mode_flag == true` per the §7.4.3.20 inference.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcScalingListData {
     pub copy_mode_flag: [bool; NUM_SCALING_LIST_IDS],
     pub pred_mode_flag: [bool; NUM_SCALING_LIST_IDS],
@@ -832,6 +838,7 @@ fn write_scaling_list_data(
 
 /// Decoded `adaptation_parameter_set_rbsp()` (§7.3.2.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcAps {
     /// One of [`APS_PARAMS_TYPE_ALF`] / [`APS_PARAMS_TYPE_LMCS`] /
     /// [`APS_PARAMS_TYPE_SCALING`]. Reserved values are refused at
@@ -848,6 +855,7 @@ pub struct VvcAps {
 
 /// The type-discriminated APS payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VvcApsPayload {
     Alf(Box<VvcAlfData>),
     Lmcs(VvcLmcsData),

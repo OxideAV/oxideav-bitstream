@@ -45,10 +45,21 @@ pub const SEI_TYPE_MASTERING_DISPLAY_COLOUR_VOLUME: u32 = 137;
 pub const SEI_TYPE_CONTENT_LIGHT_LEVEL_INFO: u32 = 144;
 
 /// One raw `sei_message()` (§7.3.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SeiMessage {
     pub payload_type: u32,
     pub payload: Vec<u8>,
+}
+
+impl SeiMessage {
+    /// Build `SeiMessage` from its mandatory fields.
+    pub fn new(payload_type: u32, payload: Vec<u8>) -> Self {
+        Self {
+            payload_type,
+            payload,
+        }
+    }
 }
 
 /// Split an SEI RBSP into raw messages (§7.3.5 framing). Identical
@@ -168,6 +179,7 @@ pub fn write_sei_rbsp(messages: &[SeiMessage]) -> Result<Vec<u8>, BitstreamError
 /// `mastering_display_colour_volume()` — §D.2.28 / §D.3.28.
 /// Chromaticities are in 0.00002 units; luminances in 0.0001 cd/m².
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiMasteringDisplayColourVolume {
     /// `(display_primaries_x[c], display_primaries_y[c])` for c = 0..3
     /// (G/B/R order per §D.3.28).
@@ -179,6 +191,7 @@ pub struct SeiMasteringDisplayColourVolume {
 
 /// `content_light_level_info()` — §D.2.35 / §D.3.35, in cd/m².
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiContentLightLevel {
     pub max_content_light_level: u16,
     pub max_pic_average_light_level: u16,
@@ -187,6 +200,7 @@ pub struct SeiContentLightLevel {
 /// `recovery_point()` — §D.2.8. Unlike H.264, `recovery_poc_cnt` is
 /// signed (`se(v)`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiRecoveryPoint {
     pub recovery_poc_cnt: i32,
     pub exact_match_flag: bool,
@@ -195,6 +209,7 @@ pub struct SeiRecoveryPoint {
 
 /// `user_data_registered_itu_t_t35()` — §D.2.6.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiUserDataRegisteredItuTT35 {
     pub country_code: u8,
     pub country_code_extension: Option<u8>,
@@ -203,6 +218,7 @@ pub struct SeiUserDataRegisteredItuTT35 {
 
 /// `user_data_unregistered()` — §D.2.7.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiUserDataUnregistered {
     pub uuid: [u8; 16],
     pub payload: Vec<u8>,
@@ -210,6 +226,7 @@ pub struct SeiUserDataUnregistered {
 
 /// A decoded HEVC SEI payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HevcSei {
     UserDataRegisteredItuTT35(SeiUserDataRegisteredItuTT35),
     UserDataUnregistered(SeiUserDataUnregistered),
@@ -408,6 +425,7 @@ pub fn encode_sei_message(sei: &HevcSei) -> Result<SeiMessage, BitstreamError> {
 /// VUI `frame_field_info_present_flag` gate for pic_timing's
 /// `pic_struct` triple.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct SeiHrdContext<'a> {
     /// The SPS-VUI `hrd_parameters()` (§E.2.2).
     pub hrd: &'a HevcHrdParameters,
@@ -418,6 +436,21 @@ pub struct SeiHrdContext<'a> {
     /// `pic_struct` / `source_scan_type` / `duplicate_flag` triple in
     /// pic_timing.
     pub frame_field_info_present_flag: bool,
+}
+
+impl<'a> SeiHrdContext<'a> {
+    /// Build `SeiHrdContext` from its mandatory fields.
+    pub fn new(
+        hrd: &'a HevcHrdParameters,
+        sub_layer_id: usize,
+        frame_field_info_present_flag: bool,
+    ) -> Self {
+        Self {
+            hrd,
+            sub_layer_id,
+            frame_field_info_present_flag,
+        }
+    }
 }
 
 impl SeiHrdContext<'_> {
@@ -446,6 +479,7 @@ impl SeiHrdContext<'_> {
 /// initial_alt_cpb_removal_offset)` — coded only when
 /// `sub_pic_hrd_params_present_flag` or `irap_cpb_params_present_flag`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiInitialCpbDelays {
     pub initial_cpb_removal_delay: u32,
     pub initial_cpb_removal_offset: u32,
@@ -455,6 +489,7 @@ pub struct SeiInitialCpbDelays {
 /// `buffering_period()` — §D.2.2 / §D.3.2. All `u(v)` field widths
 /// come from the [`SeiHrdContext`]'s `hrd_parameters()`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiBufferingPeriod {
     /// `bp_seq_parameter_set_id` ue(v) — 0..=15.
     pub bp_seq_parameter_set_id: u32,
@@ -722,6 +757,7 @@ pub fn encode_buffering_period(
 /// One decoding unit's entry in pic_timing's sub-picture block
 /// (§D.2.3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiPicTimingDu {
     /// `num_nalus_in_du_minus1[i]` ue(v).
     pub num_nalus_in_du_minus1: u32,
@@ -734,6 +770,7 @@ pub struct SeiPicTimingDu {
 /// `pic_timing()` — §D.2.3 / §D.3.3. All `u(v)` field widths and
 /// presence gates come from the [`SeiHrdContext`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiPicTiming {
     /// `(pic_struct, source_scan_type, duplicate_flag)` — present iff
     /// the VUI `frame_field_info_present_flag`. `pic_struct` 0..=12

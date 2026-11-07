@@ -50,6 +50,7 @@
 
 pub mod av1;
 pub mod bit_reader;
+#[doc(hidden)]
 pub mod bit_writer;
 pub mod h264;
 pub mod h266;
@@ -68,6 +69,7 @@ pub mod vp9;
 /// `oxideav-vulkan-video` can pull it in without tugging on the rest
 /// of the framework.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BitstreamError {
     /// The byte stream ended in the middle of a header we expected
     /// to be complete (NAL too short, OBU truncated, etc.).

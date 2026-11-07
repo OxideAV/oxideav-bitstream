@@ -40,11 +40,40 @@ pub struct IvfHeader {
     pub frame_count: u32,
 }
 
+impl IvfHeader {
+    /// Build `IvfHeader` from its mandatory fields.
+    pub fn new(
+        fourcc: [u8; 4],
+        width: u16,
+        height: u16,
+        framerate_num: u32,
+        framerate_den: u32,
+        frame_count: u32,
+    ) -> Self {
+        Self {
+            fourcc,
+            width,
+            height,
+            framerate_num,
+            framerate_den,
+            frame_count,
+        }
+    }
+}
+
 /// Borrowed view of one IVF frame.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct IvfFrame<'a> {
     pub timestamp: u64,
     pub payload: &'a [u8],
+}
+
+impl<'a> IvfFrame<'a> {
+    /// Build `IvfFrame` from its mandatory fields.
+    pub fn new(timestamp: u64, payload: &'a [u8]) -> Self {
+        Self { timestamp, payload }
+    }
 }
 
 /// Parse the 32-byte IVF global header and return it together with a

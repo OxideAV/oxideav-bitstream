@@ -45,7 +45,8 @@ pub(crate) fn ceil_log2_u64(x: u64) -> u32 {
 // ─────────────────────────── dpb_parameters (7.3.4) ──────────────────────────
 
 /// One sublayer's DPB sizing triple (§7.3.4 / §7.4.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcDpbEntry {
     /// `dpb_max_dec_pic_buffering_minus1[i]` ue(v) — 0..=15
     /// (`MaxDpbSize` caps at 16 per §A.4.2).
@@ -63,6 +64,7 @@ pub struct VvcDpbEntry {
 /// `MaxSubLayersMinus1 + 1` of them when `subLayerInfoFlag = 1`, only
 /// the highest sublayer's triple otherwise.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcDpbParameters {
     /// Walked `(buffering, reorder, latency)` triples, lowest walked
     /// sublayer first.
@@ -141,6 +143,7 @@ pub fn write_dpb_parameters(
 /// (`general_du_hrd_params_present_flag = 0`, `hrd_cpb_cnt_minus1 =
 /// 0`, scales 0).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcGeneralTimingHrd {
     /// `num_units_in_tick` u(32) — must be > 0.
     pub num_units_in_tick: u32,
@@ -258,7 +261,8 @@ pub fn write_general_timing_hrd(
 
 /// One CPB delivery schedule inside `sublayer_hrd_parameters()`
 /// (§7.3.5.3 / §7.4.6.3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcCpbSchedule {
     /// `bit_rate_value_minus1[i][j]` ue(v).
     pub bit_rate_value_minus1: u32,
@@ -274,6 +278,7 @@ pub struct VvcCpbSchedule {
 /// `sublayer_hrd_parameters(subLayerId)` — `hrd_cpb_cnt_minus1 + 1`
 /// CPB schedules (§7.3.5.3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcSublayerHrd {
     /// Exactly `hrd_cpb_cnt_minus1 + 1` schedules.
     pub schedules: Vec<VvcCpbSchedule>,
@@ -345,6 +350,7 @@ fn write_sublayer_hrd(
 /// One sublayer's entry in `ols_timing_hrd_parameters()` (§7.3.5.2 /
 /// §7.4.6.2).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcOlsTimingHrdSublayer {
     /// `fixed_pic_rate_general_flag[i]` u(1).
     pub fixed_pic_rate_general_flag: u8,
@@ -370,6 +376,7 @@ pub struct VvcOlsTimingHrdSublayer {
 /// (§7.3.5.2) — one entry per sublayer in
 /// `firstSubLayer..=MaxSubLayersVal`, lowest first.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcOlsTimingHrd {
     /// Walked sublayer entries (`MaxSubLayersVal - firstSubLayer + 1`
     /// of them).
@@ -494,6 +501,7 @@ pub enum VvcRplsEntry {
 
 /// A parsed `ref_pic_list_struct(listIdx, rplsIdx)` (§7.3.10).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcRefPicListStruct {
     /// `ltrp_in_header_flag` — coded only when
     /// `sps_long_term_ref_pics_flag`, `rplsIdx <
@@ -505,7 +513,8 @@ pub struct VvcRefPicListStruct {
 }
 
 /// Context the spec threads into `ref_pic_list_struct()` from the SPS.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct VvcRplsContext {
     /// `sps_long_term_ref_pics_flag`.
     pub long_term_ref_pics: bool,

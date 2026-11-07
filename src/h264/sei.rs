@@ -36,10 +36,21 @@ pub const SEI_TYPE_RECOVERY_POINT: u32 = 6;
 /// One raw `sei_message()` (§7.3.2.3.1): the accumulated
 /// `payloadType` and the payload bytes (still RBSP-level — emulation
 /// prevention was stripped before framing).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SeiMessage {
     pub payload_type: u32,
     pub payload: Vec<u8>,
+}
+
+impl SeiMessage {
+    /// Build `SeiMessage` from its mandatory fields.
+    pub fn new(payload_type: u32, payload: Vec<u8>) -> Self {
+        Self {
+            payload_type,
+            payload,
+        }
+    }
 }
 
 /// Split an SEI RBSP into its raw messages (§7.3.2.3 framing:
@@ -175,6 +186,7 @@ pub fn write_sei_rbsp(messages: &[SeiMessage]) -> Result<Vec<u8>, BitstreamError
 /// schedule entry, for whichever of the NAL / VCL HRD blocks the
 /// active SPS carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiBufferingPeriod {
     pub seq_parameter_set_id: u32,
     /// `(initial_cpb_removal_delay, initial_cpb_removal_delay_offset)`
@@ -186,6 +198,7 @@ pub struct SeiBufferingPeriod {
 
 /// One clock timestamp set from `pic_timing()` (§D.1.3).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiClockTimestamp {
     pub ct_type: u8,
     pub nuit_field_based_flag: bool,
@@ -204,6 +217,7 @@ pub struct SeiClockTimestamp {
 
 /// `pic_timing()` — §D.1.3.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiPicTiming {
     /// Present when `CpbDpbDelaysPresentFlag` (HRD in the SPS).
     pub cpb_removal_delay: Option<u32>,
@@ -217,6 +231,7 @@ pub struct SeiPicTiming {
 
 /// `user_data_registered_itu_t_t35()` — §D.1.6.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiUserDataRegisteredItuTT35 {
     pub country_code: u8,
     /// Present when `country_code == 0xFF`.
@@ -226,6 +241,7 @@ pub struct SeiUserDataRegisteredItuTT35 {
 
 /// `user_data_unregistered()` — §D.1.7.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiUserDataUnregistered {
     pub uuid: [u8; 16],
     pub payload: Vec<u8>,
@@ -233,6 +249,7 @@ pub struct SeiUserDataUnregistered {
 
 /// `recovery_point()` — §D.1.8.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SeiRecoveryPoint {
     pub recovery_frame_cnt: u32,
     pub exact_match_flag: bool,
@@ -242,6 +259,7 @@ pub struct SeiRecoveryPoint {
 
 /// A decoded SEI payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum H264Sei {
     BufferingPeriod(SeiBufferingPeriod),
     PicTiming(SeiPicTiming),

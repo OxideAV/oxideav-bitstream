@@ -404,11 +404,7 @@ fn drive_hevc_typed_sei_roundtrips(data: &[u8]) {
     let Some(hrd) = &vui.hrd_parameters else {
         return;
     };
-    let ctx = hevc::sei::SeiHrdContext {
-        hrd,
-        sub_layer_id: 0,
-        frame_field_info_present_flag: vui.frame_field_info_present_flag,
-    };
+    let ctx = hevc::sei::SeiHrdContext::new(hrd, 0, vui.frame_field_info_present_flag);
     let Ok(msgs) = hevc::sei::parse_sei_rbsp(tail) else {
         return;
     };
@@ -560,26 +556,17 @@ fn drive_h266_sei_roundtrips(data: &[u8]) {
     let split = 1 + (data[0] as usize % data.len().max(1)).min(data.len() - 1);
     let (head, tail) = data.split_at(split.min(data.len()));
     let temporal_id = data[1] & 0x07;
-    let bp_msg = vsei::SeiMessage {
-        payload_type: vsei::SEI_TYPE_BUFFERING_PERIOD,
-        payload: head.to_vec(),
-    };
+    let bp_msg = vsei::SeiMessage::new(vsei::SEI_TYPE_BUFFERING_PERIOD, head.to_vec());
     let Ok(bp) = vsei::decode_buffering_period(&bp_msg) else {
         return;
     };
-    let pt_msg = vsei::SeiMessage {
-        payload_type: vsei::SEI_TYPE_PIC_TIMING,
-        payload: tail.to_vec(),
-    };
+    let pt_msg = vsei::SeiMessage::new(vsei::SEI_TYPE_PIC_TIMING, tail.to_vec());
     if let Ok(pt) = vsei::decode_pic_timing(&pt_msg, &bp, temporal_id) {
         let enc = vsei::encode_pic_timing(&pt, &bp, temporal_id)
             .expect("encoder accepts every decoded PT");
         assert_eq!(enc.payload, pt_msg.payload, "PT byte fixed point");
     }
-    let dui_msg = vsei::SeiMessage {
-        payload_type: vsei::SEI_TYPE_DECODING_UNIT_INFO,
-        payload: tail.to_vec(),
-    };
+    let dui_msg = vsei::SeiMessage::new(vsei::SEI_TYPE_DECODING_UNIT_INFO, tail.to_vec());
     if let Ok(dui) = vsei::decode_decoding_unit_info(&dui_msg, &bp, temporal_id) {
         let enc = vsei::encode_decoding_unit_info(&dui, &bp, temporal_id)
             .expect("encoder accepts every decoded DUI");

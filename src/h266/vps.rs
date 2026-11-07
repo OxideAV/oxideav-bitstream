@@ -35,6 +35,7 @@ use crate::bit_writer::BitWriter;
 /// One layer's entry in the VPS layer loop (§7.3.2.3). Uncoded fields
 /// carry their §7.4.3.3 inferred values.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVpsLayer {
     /// `vps_layer_id[i]` u(6) — strictly increasing across layers.
     pub vps_layer_id: u8,
@@ -56,7 +57,8 @@ pub struct VvcVpsLayer {
 }
 
 /// One `profile_tier_level()` slot in the VPS (§7.3.2.3).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVpsPtl {
     /// `vps_pt_present_flag[i]` u(1) — coded only for `i > 0`;
     /// inferred 1 for `i == 0`.
@@ -72,6 +74,7 @@ pub struct VvcVpsPtl {
 
 /// One `dpb_parameters()` slot in the VPS (§7.3.2.3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVpsDpb {
     /// `vps_dpb_max_tid[i]` u(3) — coded only when
     /// `!vps_default_ptl_dpb_hrd_max_tid_flag`; inferred
@@ -84,6 +87,7 @@ pub struct VvcVpsDpb {
 
 /// Per-multi-layer-OLS DPB sizing (§7.3.2.3).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVpsOlsDpb {
     /// `vps_ols_dpb_pic_width[i]` ue(v).
     pub vps_ols_dpb_pic_width: u32,
@@ -102,6 +106,7 @@ pub struct VvcVpsOlsDpb {
 
 /// One `ols_timing_hrd_parameters()` slot in the VPS timing block.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVpsOlsHrd {
     /// `vps_hrd_max_tid[i]` u(3) — coded only when
     /// `!vps_default_ptl_dpb_hrd_max_tid_flag`; inferred
@@ -114,6 +119,7 @@ pub struct VvcVpsOlsHrd {
 /// The VPS timing/HRD block (§7.3.2.3, present iff
 /// `vps_timing_hrd_params_present_flag`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVpsTimingHrd {
     /// `general_timing_hrd_parameters()` (§7.3.5.1).
     pub general: VvcGeneralTimingHrd,
@@ -134,6 +140,7 @@ pub struct VvcVpsTimingHrd {
 /// retained (or spec-inferred when absent) so [`write_vps`] can
 /// re-emit the RBSP byte-exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcVps {
     /// `vps_video_parameter_set_id` u(4) — the spec requires > 0;
     /// surfaced rather than rejected so callers can decide.

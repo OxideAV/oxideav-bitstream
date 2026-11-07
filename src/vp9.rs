@@ -50,6 +50,7 @@ const SEGMENT_FEATURE_SIGNED: [bool; SEG_LVL_MAX] = [true, true, false, false];
 /// Parsed VP9 uncompressed header. Carries every field the slice-data
 /// HW APIs consume.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Vp9UncompressedHeader {
     pub profile: u8,
     pub show_existing_frame: bool,

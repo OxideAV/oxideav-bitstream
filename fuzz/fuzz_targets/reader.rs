@@ -247,13 +247,11 @@ fn obu_writer_roundtrip(data: &[u8]) {
         } else {
             (0, 0)
         };
-        let header = ObuHeader {
-            obu_type,
-            extension_flag,
-            has_size_field: true,
-            temporal_id,
-            spatial_id,
-        };
+        let header = ObuHeader::new(obu_type)
+            .with_extension_flag(extension_flag)
+            .with_has_size_field(true)
+            .with_temporal_id(temporal_id)
+            .with_spatial_id(spatial_id);
         // Cap payload at 32 bytes for fuzz performance; longer payloads
         // are well-exercised by the property test.
         let payload_len = (shape >> 6) as usize * 8 + 1; // 1, 9, 17, 25

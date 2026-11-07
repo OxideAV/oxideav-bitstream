@@ -52,6 +52,7 @@ pub const SPS_NUM_SUBPICS_MINUS1_MAX: u32 = 999;
 /// coded for this index (per the `u(v)` presence conditions) carry
 /// their spec-inferred values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcSubpicEntry {
     /// `sps_subpic_ctu_top_left_x[i]` u(v) in CTU units — coded only
     /// when `i > 0` and the picture is wider than one CTU.
@@ -75,6 +76,7 @@ pub struct VvcSubpicEntry {
 /// The SPS subpicture info block (§7.3.2.4, present iff
 /// `sps_subpic_info_present_flag`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcSubpicInfo {
     /// `sps_num_subpics_minus1` ue(v) — 0..=999 (Table A.2).
     pub sps_num_subpics_minus1: u32,
@@ -321,6 +323,7 @@ fn write_subpic_info(
 
 /// One chroma QP mapping table (§7.3.2.4 / §7.4.3.4).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcChromaQpTable {
     /// `sps_qp_table_start_minus26[i]` se(v) — `-26 - QpBdOffset ..= 36`.
     pub sps_qp_table_start_minus26: i32,
@@ -333,6 +336,7 @@ pub struct VvcChromaQpTable {
 /// The `sps_ladf_*` block (§7.3.2.4, present iff
 /// `sps_ladf_enabled_flag`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcLadf {
     /// `sps_ladf_lowest_interval_qp_offset` se(v).
     pub sps_ladf_lowest_interval_qp_offset: i32,
@@ -344,6 +348,7 @@ pub struct VvcLadf {
 
 /// `sps_range_extension()` syntax structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcSpsRangeExtension {
     /// `sps_extended_precision_flag` u(1).
     pub sps_extended_precision_flag: u8,
@@ -361,6 +366,7 @@ pub struct VvcSpsRangeExtension {
 /// The SPS timing/HRD block (§7.3.2.4, present iff
 /// `sps_timing_hrd_params_present_flag`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcSpsTimingHrd {
     /// `general_timing_hrd_parameters()` (§7.3.5.1).
     pub general: VvcGeneralTimingHrd,
@@ -379,6 +385,7 @@ pub struct VvcSpsTimingHrd {
 /// retained (or spec-inferred when its presence condition failed), so
 /// [`write_sps`] can re-emit the RBSP byte-exactly.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct VvcSps {
     /// `sps_seq_parameter_set_id` u(4).
     pub sps_seq_parameter_set_id: u8,

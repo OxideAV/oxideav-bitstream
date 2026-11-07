@@ -903,13 +903,11 @@ fn write_obu_round_trips_against_read_obu_over_random_payloads() {
         } else {
             (0, 0)
         };
-        let header = ObuHeader {
-            obu_type,
-            extension_flag,
-            has_size_field: true,
-            temporal_id,
-            spatial_id,
-        };
+        let header = ObuHeader::new(obu_type)
+            .with_extension_flag(extension_flag)
+            .with_has_size_field(true)
+            .with_temporal_id(temporal_id)
+            .with_spatial_id(spatial_id);
         // Bounded payload length — sweep across single-byte, multi-byte,
         // and 7-bit-boundary-crossing size-field encodings.
         let len = (rng.next_u32() % 600) as usize;
@@ -930,13 +928,11 @@ fn write_obu_validates_field_widths() {
     // Every field has a precise bit width per §5.3.2 / §5.3.3; values
     // above the cap must be rejected with an InvalidData error and the
     // output buffer left untouched.
-    let h_ok = ObuHeader {
-        obu_type: OBU_TEMPORAL_DELIMITER,
-        extension_flag: false,
-        has_size_field: true,
-        temporal_id: 0,
-        spatial_id: 0,
-    };
+    let h_ok = ObuHeader::new(OBU_TEMPORAL_DELIMITER)
+        .with_extension_flag(false)
+        .with_has_size_field(true)
+        .with_temporal_id(0)
+        .with_spatial_id(0);
 
     // obu_type > 15.
     let mut h = h_ok;
@@ -953,38 +949,32 @@ fn write_obu_validates_field_widths() {
     assert!(buf.is_empty());
 
     // temporal_id > 7 with extension_flag=true.
-    let h = ObuHeader {
-        obu_type: OBU_FRAME,
-        extension_flag: true,
-        has_size_field: true,
-        temporal_id: OBU_TEMPORAL_ID_MAX + 1,
-        spatial_id: 0,
-    };
+    let h = ObuHeader::new(OBU_FRAME)
+        .with_extension_flag(true)
+        .with_has_size_field(true)
+        .with_temporal_id(OBU_TEMPORAL_ID_MAX + 1)
+        .with_spatial_id(0);
     let mut buf = Vec::new();
     assert!(write_obu(&mut buf, h, &[]).is_err());
     assert!(buf.is_empty());
 
     // spatial_id > 3 with extension_flag=true.
-    let h = ObuHeader {
-        obu_type: OBU_FRAME,
-        extension_flag: true,
-        has_size_field: true,
-        temporal_id: 0,
-        spatial_id: OBU_SPATIAL_ID_MAX + 1,
-    };
+    let h = ObuHeader::new(OBU_FRAME)
+        .with_extension_flag(true)
+        .with_has_size_field(true)
+        .with_temporal_id(0)
+        .with_spatial_id(OBU_SPATIAL_ID_MAX + 1);
     let mut buf = Vec::new();
     assert!(write_obu(&mut buf, h, &[]).is_err());
     assert!(buf.is_empty());
 
     // Non-zero IDs with extension_flag=false silently lose info in the
     // reader; the writer rejects them.
-    let h = ObuHeader {
-        obu_type: OBU_FRAME,
-        extension_flag: false,
-        has_size_field: true,
-        temporal_id: 1,
-        spatial_id: 0,
-    };
+    let h = ObuHeader::new(OBU_FRAME)
+        .with_extension_flag(false)
+        .with_has_size_field(true)
+        .with_temporal_id(1)
+        .with_spatial_id(0);
     let mut buf = Vec::new();
     assert!(write_obu(&mut buf, h, &[]).is_err());
     assert!(buf.is_empty());
@@ -1009,13 +999,11 @@ fn write_obu_concatenated_stream_is_walkable_by_read_obu() {
         } else {
             (0, 0)
         };
-        let header = ObuHeader {
-            obu_type,
-            extension_flag,
-            has_size_field: true,
-            temporal_id,
-            spatial_id,
-        };
+        let header = ObuHeader::new(obu_type)
+            .with_extension_flag(extension_flag)
+            .with_has_size_field(true)
+            .with_temporal_id(temporal_id)
+            .with_spatial_id(spatial_id);
         let len = (rng.next_u32() % 50) as usize;
         let payload: Vec<u8> = (0..len).map(|_| (rng.next_u32() & 0xff) as u8).collect();
         write_obu(&mut out, header, &payload).unwrap();
@@ -1179,14 +1167,15 @@ impl<T: core::fmt::Debug> UnwrapErrOrElsePanic<T> for Result<T, BitstreamError> 
 /// (`sps_log2_max_pic_order_cnt_lsb_minus4`). Other fields are filled
 /// with canonical defaults the PH parser does not touch.
 fn sps_for_poc_width(log2_max_poc_lsb_minus4: u8) -> VvcSps {
-    VvcSps {
-        sps_chroma_format_idc: 1,
-        sps_log2_ctu_size_minus5: 2,
-        sps_pic_width_max_in_luma_samples: 1920,
-        sps_pic_height_max_in_luma_samples: 1080,
-        sps_bitdepth_minus8: 2,
-        sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
-        ..Default::default()
+    {
+        let mut vvc_sps = VvcSps::default();
+        vvc_sps.sps_chroma_format_idc = 1;
+        vvc_sps.sps_log2_ctu_size_minus5 = 2;
+        vvc_sps.sps_pic_width_max_in_luma_samples = 1920;
+        vvc_sps.sps_pic_height_max_in_luma_samples = 1080;
+        vvc_sps.sps_bitdepth_minus8 = 2;
+        vvc_sps.sps_log2_max_pic_order_cnt_lsb_minus4 = log2_max_poc_lsb_minus4;
+        vvc_sps
     }
 }
 
@@ -1607,9 +1596,7 @@ fn ivf_write_header_emits_fixed_bytes_reader_demands() {
 #[test]
 fn h264_aud_roundtrips_every_pic_type() {
     for pt in 0u8..=H264_PRIMARY_PIC_TYPE_MAX {
-        let in_ = H264AccessUnitDelimiter {
-            primary_pic_type: pt,
-        };
+        let in_ = H264AccessUnitDelimiter::new(pt);
         let bytes = h264_write_aud_nal(&in_).expect("h264 AUD writes");
         assert_eq!(bytes.len(), 2, "h264 AUD is 2 bytes");
         assert_eq!(bytes[0], 0x09, "header byte is nal_unit_type=9");
@@ -1625,10 +1612,8 @@ fn h264_aud_roundtrips_every_pic_type() {
 #[test]
 fn h264_aud_rejects_oversized_pic_type() {
     for pt in (H264_PRIMARY_PIC_TYPE_MAX + 1)..=255 {
-        let err = h264_write_aud_nal(&H264AccessUnitDelimiter {
-            primary_pic_type: pt,
-        })
-        .expect_err("oversized pic_type rejected");
+        let err = h264_write_aud_nal(&H264AccessUnitDelimiter::new(pt))
+            .expect_err("oversized pic_type rejected");
         assert!(matches!(
             err,
             oxideav_bitstream::BitstreamError::InvalidData(_)
@@ -1644,7 +1629,7 @@ fn h264_aud_rejects_oversized_pic_type() {
 #[test]
 fn hevc_aud_roundtrips_every_pic_type() {
     for pt in 0u8..=HEVC_PIC_TYPE_MAX {
-        let in_ = HevcAccessUnitDelimiter { pic_type: pt };
+        let in_ = HevcAccessUnitDelimiter::new(pt);
         let bytes = hevc_write_aud_nal(&in_).expect("hevc AUD writes");
         assert_eq!(bytes.len(), 3, "hevc AUD is 3 bytes");
         assert_eq!(bytes[0], 0x46, "header byte0: nal_unit_type=35");
@@ -1657,7 +1642,7 @@ fn hevc_aud_roundtrips_every_pic_type() {
 #[test]
 fn hevc_aud_rejects_oversized_pic_type() {
     for pt in (HEVC_PIC_TYPE_MAX + 1)..=255 {
-        let err = hevc_write_aud_nal(&HevcAccessUnitDelimiter { pic_type: pt })
+        let err = hevc_write_aud_nal(&HevcAccessUnitDelimiter::new(pt))
             .expect_err("oversized pic_type rejected");
         assert!(matches!(
             err,
@@ -1675,10 +1660,7 @@ fn hevc_aud_rejects_oversized_pic_type() {
 fn h266_aud_roundtrips_every_combination() {
     for irap in 0u8..=1 {
         for pt in 0u8..=AUD_PIC_TYPE_MAX {
-            let in_ = VvcAccessUnitDelimiter {
-                aud_irap_or_gdr_flag: irap,
-                aud_pic_type: pt,
-            };
+            let in_ = VvcAccessUnitDelimiter::new(irap, pt);
             let bytes = write_aud(&in_).expect("h266 AUD writes");
             assert_eq!(bytes.len(), 3, "h266 AUD is 3 bytes");
             assert_eq!(bytes[0], 0x00, "header byte0: forbidden+reserved+layer=0");
@@ -1693,11 +1675,8 @@ fn h266_aud_roundtrips_every_combination() {
 fn h266_aud_rejects_oversized_fields() {
     // Out-of-range irap flag.
     for bad_irap in 2u8..=255 {
-        let err = write_aud(&VvcAccessUnitDelimiter {
-            aud_irap_or_gdr_flag: bad_irap,
-            aud_pic_type: 0,
-        })
-        .expect_err("oversized irap flag rejected");
+        let err = write_aud(&VvcAccessUnitDelimiter::new(bad_irap, 0))
+            .expect_err("oversized irap flag rejected");
         assert!(matches!(
             err,
             oxideav_bitstream::BitstreamError::InvalidData(_)
@@ -1705,11 +1684,8 @@ fn h266_aud_rejects_oversized_fields() {
     }
     // Out-of-range pic_type.
     for bad_pt in (AUD_PIC_TYPE_MAX + 1)..=255 {
-        let err = write_aud(&VvcAccessUnitDelimiter {
-            aud_irap_or_gdr_flag: 0,
-            aud_pic_type: bad_pt,
-        })
-        .expect_err("oversized aud_pic_type rejected");
+        let err = write_aud(&VvcAccessUnitDelimiter::new(0, bad_pt))
+            .expect_err("oversized aud_pic_type rejected");
         assert!(matches!(
             err,
             oxideav_bitstream::BitstreamError::InvalidData(_)
@@ -1726,26 +1702,19 @@ fn aud_writers_emit_documented_byte_layout() {
     // H.264, primary_pic_type=3 (011) + stop(1) + alignment 0000 ->
     // 0b0111_0000 = 0x70.
     assert_eq!(
-        h264_write_aud_nal(&H264AccessUnitDelimiter {
-            primary_pic_type: 3
-        })
-        .unwrap(),
+        h264_write_aud_nal(&H264AccessUnitDelimiter::new(3)).unwrap(),
         vec![0x09, 0x70]
     );
     // HEVC, pic_type=1 (001) + stop(1) + alignment 0000 -> 0b0011_0000
     // = 0x30.
     assert_eq!(
-        hevc_write_aud_nal(&HevcAccessUnitDelimiter { pic_type: 1 }).unwrap(),
+        hevc_write_aud_nal(&HevcAccessUnitDelimiter::new(1)).unwrap(),
         vec![0x46, 0x01, 0x30]
     );
     // H.266, irap=1, pic_type=1 (001) -> 1 001 1 000 = 0b1001_1000 =
     // 0x98.
     assert_eq!(
-        write_aud(&VvcAccessUnitDelimiter {
-            aud_irap_or_gdr_flag: 1,
-            aud_pic_type: 1
-        })
-        .unwrap(),
+        write_aud(&VvcAccessUnitDelimiter::new(1, 1)).unwrap(),
         vec![0x00, 0xA1, 0x98]
     );
 }

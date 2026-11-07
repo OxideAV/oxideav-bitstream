@@ -42,10 +42,21 @@ pub const SEI_TYPE_CONSTRAINED_RASL_ENCODING: u32 = 207;
 // ─────────────────────────── Framing (§7.3.6) ────────────────────────────────
 
 /// One raw `sei_message()` (§7.3.6).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct SeiMessage {
     pub payload_type: u32,
     pub payload: Vec<u8>,
+}
+
+impl SeiMessage {
+    /// Build `SeiMessage` from its mandatory fields.
+    pub fn new(payload_type: u32, payload: Vec<u8>) -> Self {
+        Self {
+            payload_type,
+            payload,
+        }
+    }
 }
 
 /// Parse one `sei_message()` starting at `*i`, advancing `*i` past
@@ -239,6 +250,7 @@ fn finish_payload(mut w: BitWriter) -> Vec<u8> {
 /// All four values are `u(bp_cpb_initial_removal_delay_length_minus1
 /// + 1)`-bit fields.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcInitialCpbDelays {
     pub removal_delay: u32,
     pub removal_offset: u32,
@@ -253,6 +265,7 @@ pub struct VvcInitialCpbDelays {
 /// bp_max_sublayers_minus1 ..= bp_max_sublayers_minus1`) and stay
 /// empty elsewhere.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcBufferingPeriod {
     pub bp_nal_hrd_params_present_flag: bool,
     pub bp_vcl_hrd_params_present_flag: bool,
@@ -615,6 +628,7 @@ pub fn encode_buffering_period(bp: &VvcBufferingPeriod) -> Result<SeiMessage, Bi
 
 /// Per-sublayer alternative-CPB timing block (§D.4.1 inner loops).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcPtAltCpb {
     /// `(alt_initial_removal_delay_delta[j],
     /// alt_initial_removal_offset_delta[j])`, `bp_cpb_cnt_minus1 + 1`
@@ -631,6 +645,7 @@ pub struct VvcPtAltCpb {
 /// `bp_du_hrd_params_present_flag &&
 /// bp_du_cpb_params_in_pic_timing_sei_flag`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcPtDuInfo {
     /// Coded iff `pt_num_decoding_units_minus1 > 0`; inferred 0.
     pub pt_du_common_cpb_removal_delay_flag: bool,
@@ -649,6 +664,7 @@ pub struct VvcPtDuInfo {
 /// (`TemporalId ..= bp_max_sublayers_minus1` hold coded/inferred
 /// values; other entries stay at their defaults).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcPicTiming {
     /// `pt_cpb_removal_delay_minus1[i]`,
     /// `u(bp_cpb_removal_delay_length_minus1 + 1)`. Entry
@@ -1049,6 +1065,7 @@ pub fn encode_pic_timing(
 
 /// `decoding_unit_info()` (§D.5.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcDecodingUnitInfo {
     pub dui_decoding_unit_idx: u32,
     /// `[bp_max_sublayers_minus1]` is inferred 1 when the BP has
@@ -1180,6 +1197,7 @@ pub fn encode_decoding_unit_info(
 /// `scalable_nesting()` (§D.6.1). Nested SEI messages are surfaced as
 /// raw [`SeiMessage`]s (decode them with the same typed decoders).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcScalableNesting {
     pub sn_ols_flag: bool,
     pub sn_subpic_flag: bool,
@@ -1385,6 +1403,7 @@ pub fn encode_scalable_nesting(sn: &VvcScalableNesting) -> Result<SeiMessage, Bi
 
 /// `subpic_level_info()` (§D.7.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcSubpicLevelInfo {
     pub sli_cbr_constraint_flag: bool,
     pub sli_explicit_fraction_present_flag: bool,
@@ -1402,6 +1421,7 @@ pub struct VvcSubpicLevelInfo {
 
 /// One reference level entry of `subpic_level_info()`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcSliRefLevel {
     pub non_subpic_layers_fraction: u8,
     pub ref_level_idc: u8,
@@ -1549,6 +1569,7 @@ pub fn encode_subpic_level_info(sli: &VvcSubpicLevelInfo) -> Result<SeiMessage, 
 /// Description values per §D.8.2: 0 unknown, 1 necessary,
 /// 2 unnecessary, 3 undetermined (4..=255 reserved).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcSeiManifest {
     pub entries: Vec<(u16, u8)>,
 }
@@ -1599,6 +1620,7 @@ pub fn encode_sei_manifest(m: &VvcSeiManifest) -> Result<SeiMessage, BitstreamEr
 /// `sei_prefix_indication()` (§D.9.1): bit-string prefixes of an SEI
 /// payload of type `prefix_sei_payload_type`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct VvcSeiPrefixIndication {
     pub prefix_sei_payload_type: u16,
     /// Each indication is a bit string; stored as the bit values in
@@ -1685,6 +1707,7 @@ pub fn encode_sei_prefix_indication(
 /// `pic_timing` / `decoding_unit_info` with their buffering-period
 /// context via [`decode_pic_timing`] / [`decode_decoding_unit_info`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VvcSei {
     BufferingPeriod(Box<VvcBufferingPeriod>),
     ScalableNesting(VvcScalableNesting),

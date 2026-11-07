@@ -119,6 +119,7 @@ pub fn is_irap(nal_unit_type: u8) -> bool {
 /// profile/level entry are retained so [`write_profile_tier_level`]
 /// can reproduce the structure byte-exactly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcProfileTierLevel {
     pub general_profile_space: u8,
     pub general_tier_flag: bool,
@@ -149,6 +150,7 @@ pub struct HevcProfileTierLevel {
 /// `sub_layer_profile_present_flag[i]` / `sub_layer_level_present_flag[i]`
 /// was set.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcSubLayerPtl {
     pub profile: Option<HevcSubLayerProfile>,
     pub level_idc: Option<u8>,
@@ -158,6 +160,7 @@ pub struct HevcSubLayerPtl {
 /// block: space / tier / idc / compatibility flags plus the 48
 /// constraint/reserved bits in coded order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcSubLayerProfile {
     pub profile_space: u8,
     pub tier_flag: bool,
@@ -173,6 +176,7 @@ pub struct HevcSubLayerProfile {
 /// horizontal pair by `SubWidthC` and the vertical pair by `SubHeightC` to get
 /// luma samples.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcConformanceWindow {
     pub left: u32,
     pub right: u32,
@@ -194,6 +198,7 @@ pub struct HevcConformanceWindow {
 ///   (16 for `sizeId == 0`, else 64); `dc_coef_minus8` is coded for
 ///   `sizeId > 1`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcScalingListData {
     pub pred_mode_flag: [[bool; 6]; 4],
     pub pred_matrix_id_delta: [[u32; 6]; 4],
@@ -296,6 +301,7 @@ fn parse_scaling_list_data(r: &mut BitReader<'_>) -> Result<HevcScalingListData,
 /// * `used_by_curr_pic_s0/s1[i]` — the matching
 ///   `UsedByCurrPicS0/S1` flags.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcShortTermRps {
     pub delta_poc_s0: Vec<i32>,
     pub used_by_curr_pic_s0: Vec<bool>,
@@ -680,6 +686,7 @@ pub const HEVC_EXTENDED_SAR: u8 = 255;
 
 /// One CPB schedule entry from `sub_layer_hrd_parameters()` (§E.2.3).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcCpbEntry {
     pub bit_rate_value_minus1: u32,
     pub cpb_size_value_minus1: u32,
@@ -692,6 +699,7 @@ pub struct HevcCpbEntry {
 /// Per-sub-layer HRD info (the §E.2.2 loop body plus its §E.2.3
 /// schedule lists).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcHrdSubLayer {
     pub fixed_pic_rate_general_flag: bool,
     /// Inferred equal to `fixed_pic_rate_general_flag` when that flag
@@ -711,6 +719,7 @@ pub struct HevcHrdSubLayer {
 /// `hrd_parameters( commonInfPresentFlag, maxNumSubLayersMinus1 )`
 /// (§E.2.2), as embedded in the SPS VUI (`commonInfPresentFlag == 1`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcHrdParameters {
     pub nal_hrd_parameters_present_flag: bool,
     pub vcl_hrd_parameters_present_flag: bool,
@@ -843,6 +852,7 @@ fn parse_hrd_parameters_inner(
 /// Default display window offsets (§E.2.1), in units of the chroma
 /// sampling grid like the conformance window.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcDefaultDisplayWindow {
     pub left: u32,
     pub right: u32,
@@ -852,6 +862,7 @@ pub struct HevcDefaultDisplayWindow {
 
 /// VUI parameters (§E.2.1 / §E.3.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcVui {
     pub aspect_ratio_info_present_flag: bool,
     /// Table E.1; 255 = [`HEVC_EXTENDED_SAR`].
@@ -1019,6 +1030,7 @@ fn parse_vui_parameters(
 /// `vps_extension_flag` (extension payloads themselves are Annex-F
 /// material and are not decoded).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcVps {
     pub vps_video_parameter_set_id: u8,
     pub vps_base_layer_internal_flag: bool,
@@ -1062,6 +1074,7 @@ pub struct HevcVps {
 
 /// One VPS timing-block HRD entry (§7.3.2.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcVpsHrdEntry {
     pub hrd_layer_set_idx: u32,
     /// `cprms_present_flag[i]`; inferred to 1 for `i == 0`
@@ -1076,6 +1089,7 @@ pub struct HevcVpsHrdEntry {
 /// max_latency_increase_plus1` triple coded per sub-layer in the VPS
 /// (§7.3.2.1) and SPS (§7.3.2.2.1).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcSubLayerOrderingInfo {
     pub max_dec_pic_buffering_minus1: u32,
     pub max_num_reorder_pics: u32,
@@ -1084,6 +1098,7 @@ pub struct HevcSubLayerOrderingInfo {
 
 /// Sequence parameter set (7.3.2.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcSps {
     pub sps_video_parameter_set_id: u8,
     pub sps_max_sub_layers_minus1: u8,
@@ -1165,6 +1180,7 @@ pub struct HevcSps {
 
 /// SPS range extension (§7.3.2.2.2) — nine coding-tool flags.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcSpsRangeExtension {
     pub transform_skip_rotation_enabled_flag: bool,
     pub transform_skip_context_enabled_flag: bool,
@@ -1225,6 +1241,7 @@ impl HevcSps {
 
 /// Picture parameter set (7.3.2.3).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcPps {
     pub pps_pic_parameter_set_id: u8,
     pub pps_seq_parameter_set_id: u8,
@@ -1291,6 +1308,7 @@ pub struct HevcPps {
 
 /// Tile grid signalled in the PPS (§7.3.2.3.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcTiles {
     pub num_tile_columns_minus1: u32,
     pub num_tile_rows_minus1: u32,
@@ -1305,6 +1323,7 @@ pub struct HevcTiles {
 
 /// PPS range extension (§7.3.2.3.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcPpsRangeExtension {
     /// Coded only when the PPS's `transform_skip_enabled_flag`.
     pub log2_max_transform_skip_block_size_minus2: u32,
@@ -1319,6 +1338,7 @@ pub struct HevcPpsRangeExtension {
 
 /// Minimal slice segment header (7.3.6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcSliceHeader {
     pub first_slice_segment_in_pic_flag: bool,
     pub no_output_of_prior_pics_flag: bool,
@@ -1334,6 +1354,7 @@ pub struct HevcSliceHeader {
 
 /// Convenience structure for [`parse_idr_only`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct HevcIdrParse<'a> {
     pub vps: HevcVps,
     pub sps: HevcSps,
@@ -2951,7 +2972,8 @@ fn locate_annex_b(buf: &[u8]) -> Vec<NalLoc> {
 /// optionally narrows the set of `slice_type` values that may appear
 /// in the coded pictures of the access unit. `pic_type` is the only
 /// signalled field; everything else in the NAL is `rbsp_trailing_bits()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct HevcAccessUnitDelimiter {
     /// `pic_type` u(3) (§7.4.3.5 / Table 7-2). Conforming bitstreams
     /// MUST use 0, 1 or 2 (I-only / P+I / B+P+I); values 3..=7 are
@@ -2962,6 +2984,13 @@ pub struct HevcAccessUnitDelimiter {
     /// values, log a warning, or treat reserved values as a
     /// pass-through.
     pub pic_type: u8,
+}
+
+impl HevcAccessUnitDelimiter {
+    /// Build `HevcAccessUnitDelimiter` from its mandatory fields.
+    pub fn new(pic_type: u8) -> Self {
+        Self { pic_type }
+    }
 }
 
 /// `pic_type` is u(3) so the spec range is 0..=7 (§7.4.3.5).

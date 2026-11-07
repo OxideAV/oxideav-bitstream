@@ -24,21 +24,24 @@ use oxideav_bitstream::h266::{
 /// POC-LSB width, produced through the crate's own byte-exact writer
 /// (§7.3.2.4 full walk).
 fn full_sps_rbsp(log2_max_poc_lsb_minus4: u8) -> Vec<u8> {
-    write_sps(&VvcSps {
-        sps_chroma_format_idc: 1,
-        sps_log2_ctu_size_minus5: 2,
-        sps_pic_width_max_in_luma_samples: 1920,
-        sps_pic_height_max_in_luma_samples: 1080,
-        sps_bitdepth_minus8: 2,
-        sps_log2_max_pic_order_cnt_lsb_minus4: log2_max_poc_lsb_minus4,
-        sps_same_qp_table_for_chroma_flag: 1,
-        chroma_qp_tables: vec![VvcChromaQpTable {
-            sps_qp_table_start_minus26: 0,
-            points: vec![(0, 0)],
-        }],
-        sps_chroma_horizontal_collocated_flag: 1,
-        sps_chroma_vertical_collocated_flag: 1,
-        ..Default::default()
+    write_sps(&{
+        let mut vvc_sps = VvcSps::default();
+        vvc_sps.sps_chroma_format_idc = 1;
+        vvc_sps.sps_log2_ctu_size_minus5 = 2;
+        vvc_sps.sps_pic_width_max_in_luma_samples = 1920;
+        vvc_sps.sps_pic_height_max_in_luma_samples = 1080;
+        vvc_sps.sps_bitdepth_minus8 = 2;
+        vvc_sps.sps_log2_max_pic_order_cnt_lsb_minus4 = log2_max_poc_lsb_minus4;
+        vvc_sps.sps_same_qp_table_for_chroma_flag = 1;
+        vvc_sps.chroma_qp_tables = vec![{
+            let mut vvc_chroma_qp_table = VvcChromaQpTable::default();
+            vvc_chroma_qp_table.sps_qp_table_start_minus26 = 0;
+            vvc_chroma_qp_table.points = vec![(0, 0)];
+            vvc_chroma_qp_table
+        }];
+        vvc_sps.sps_chroma_horizontal_collocated_flag = 1;
+        vvc_sps.sps_chroma_vertical_collocated_flag = 1;
+        vvc_sps
     })
     .expect("SPS writes")
 }
@@ -146,12 +149,13 @@ fn walks_au_and_parses_pps_structural_fields() {
     // crate's own byte-exact writer. Demonstrates that a HW bridge can
     // run `split_annex_b` → `parse_nal_header` → `parse_pps` to
     // recover the per-picture geometry fields.
-    let pps_rbsp = write_pps(&VvcPps {
-        pps_pic_width_in_luma_samples: 64,
-        pps_pic_height_in_luma_samples: 32,
-        pps_output_flag_present_flag: 1,
-        pps_no_pic_partition_flag: 1,
-        ..Default::default()
+    let pps_rbsp = write_pps(&{
+        let mut vvc_pps = VvcPps::default();
+        vvc_pps.pps_pic_width_in_luma_samples = 64;
+        vvc_pps.pps_pic_height_in_luma_samples = 32;
+        vvc_pps.pps_output_flag_present_flag = 1;
+        vvc_pps.pps_no_pic_partition_flag = 1;
+        vvc_pps
     })
     .expect("PPS writes");
     let mut pps_nal = Vec::new();
@@ -192,34 +196,40 @@ fn walks_au_and_parses_vps_structural_fields() {
     // built through the crate's own byte-exact writer. Demonstrates
     // that a HW bridge can run split_annex_b -> parse_nal_header ->
     // parse_vps to recover the layer / sublayer count it needs.
-    let vps_rbsp = write_vps(&VvcVps {
-        vps_video_parameter_set_id: 1,
-        vps_default_ptl_dpb_hrd_max_tid_flag: 1,
-        vps_all_independent_layers_flag: 1,
-        layers: vec![VvcVpsLayer {
-            vps_independent_layer_flag: 1,
-            ..Default::default()
-        }],
-        vps_each_layer_is_an_ols_flag: 1,
-        vps_ols_mode_idc: 2,
-        ptls: vec![VvcVpsPtl {
-            vps_pt_present_flag: 1,
-            vps_ptl_max_tid: 0,
-            ptl: VvcProfileTierLevel {
-                general_profile_idc: Some(1),
-                general_tier_flag: Some(0),
-                general_level_idc: 51,
-                ptl_frame_only_constraint_flag: 1,
-                ptl_multilayer_enabled_flag: 0,
-                ptl_sublayer_level_present_flag: vec![],
-                sublayer_level_idc: vec![],
-                general_sub_profile_idc: vec![],
-                gci_present_flag: false,
-                gci_bits: vec![],
-            },
-        }],
-        vps_ols_ptl_idx: vec![0],
-        ..Default::default()
+    let vps_rbsp = write_vps(&{
+        let mut vvc_vps = VvcVps::default();
+        vvc_vps.vps_video_parameter_set_id = 1;
+        vvc_vps.vps_default_ptl_dpb_hrd_max_tid_flag = 1;
+        vvc_vps.vps_all_independent_layers_flag = 1;
+        vvc_vps.layers = vec![{
+            let mut vvc_vps_layer = VvcVpsLayer::default();
+            vvc_vps_layer.vps_independent_layer_flag = 1;
+            vvc_vps_layer
+        }];
+        vvc_vps.vps_each_layer_is_an_ols_flag = 1;
+        vvc_vps.vps_ols_mode_idc = 2;
+        vvc_vps.ptls = vec![{
+            let mut vvc_vps_ptl = VvcVpsPtl::default();
+            vvc_vps_ptl.vps_pt_present_flag = 1;
+            vvc_vps_ptl.vps_ptl_max_tid = 0;
+            vvc_vps_ptl.ptl = {
+                let mut vvc_profile_tier_level = VvcProfileTierLevel::default();
+                vvc_profile_tier_level.general_profile_idc = Some(1);
+                vvc_profile_tier_level.general_tier_flag = Some(0);
+                vvc_profile_tier_level.general_level_idc = 51;
+                vvc_profile_tier_level.ptl_frame_only_constraint_flag = 1;
+                vvc_profile_tier_level.ptl_multilayer_enabled_flag = 0;
+                vvc_profile_tier_level.ptl_sublayer_level_present_flag = vec![];
+                vvc_profile_tier_level.sublayer_level_idc = vec![];
+                vvc_profile_tier_level.general_sub_profile_idc = vec![];
+                vvc_profile_tier_level.gci_present_flag = false;
+                vvc_profile_tier_level.gci_bits = vec![];
+                vvc_profile_tier_level
+            };
+            vvc_vps_ptl
+        }];
+        vvc_vps.vps_ols_ptl_idx = vec![0];
+        vvc_vps
     })
     .expect("VPS writes");
     let mut vps_nal = Vec::new();

@@ -64,6 +64,7 @@ pub const PROFILE_ADVANCED: u8 = 3;
 // ─────────────────────────── BDU framing ────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct VcBdu<'a> {
     pub bdu_type: u8,
     pub payload: &'a [u8],
@@ -105,6 +106,7 @@ pub fn split_bdus(stream: &[u8]) -> Vec<VcBdu<'_>> {
 
 /// Sequence header (§6.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Vc1SequenceHeader {
     /// 0=Simple, 1=Main, 3=Advanced. Only Advanced is parsed by this
     /// module — the parser errors on the others.
@@ -153,6 +155,7 @@ pub struct Vc1SequenceHeader {
 
 /// Entry-point header (§6.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Vc1EntryPointHeader {
     pub broken_link: bool,
     pub closed_entry: bool,
@@ -185,6 +188,7 @@ pub struct Vc1EntryPointHeader {
 /// (frame coding mode) and the picture type, which is what
 /// `VdpPictureInfoVC1::picture_type` ultimately consumes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Vc1PictureHeader {
     /// FCM — frame coding mode (§7.1.1.15). 0 = progressive frame,
     /// 2 = interlaced field, 3 = interlaced frame.
@@ -198,6 +202,7 @@ pub struct Vc1PictureHeader {
 
 /// Convenience structure returned by [`parse_first_picture`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Vc1FirstPictureParse<'a> {
     pub sequence_header: Vc1SequenceHeader,
     pub entry_point: Vc1EntryPointHeader,
