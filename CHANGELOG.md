@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-bitstream/compare/v0.0.4...v0.0.5) - 2026-11-07
+
+### Other
+
+- API hygiene: #[non_exhaustive] on growable enums + parsed records, constructors/Default for hand-built records, hide bit_writer
+
 ### Added
 
 - Constructors for the records that callers build by hand: `ObuHeader::new(obu_type)` plus `with_extension_flag` / `with_has_size_field` / `with_temporal_id` / `with_spatial_id`; `IvfHeader::new`, `IvfFrame::new`; `H264AccessUnitDelimiter::new`, `HevcAccessUnitDelimiter::new`, `VvcAccessUnitDelimiter::new`; `SeiMessage::new` (h264 / hevc / h266) and `hevc::sei::SeiHrdContext::new`.
